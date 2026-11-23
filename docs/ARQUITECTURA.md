@@ -205,9 +205,9 @@ app/
   api/runs/[runId]/step/route.ts
   page.tsx
 components/
-  dashboard.tsx
-  agent-cards.tsx
-  task-board.tsx
+  dashboard.tsx            # estado de sesión, Realtime y avance de pasos
+  agent-identity.tsx       # nombre, rol e icono de cada agente
+  run-track.tsx            # estaciones de agentes y fichas de tareas
   event-timeline.tsx
   code-viewer.tsx
   theme-toggle.tsx
@@ -234,23 +234,41 @@ Las RPC de workflow y su migración correctiva ya están aplicadas al proyecto
 enlazado; el lint remoto no presenta errores. La UI en Fase 3 impulsará un paso
 cada vez.
 
-## Interfaz (Fase 3)
+## Interfaz (Fase 3, rediseñada en la Fase 3.5)
 
-- Formulario destacado con tres peticiones de ejemplo, validación visible y
-  respuesta a errores y límites.
-- Tarjeta por agente con estado derivado del workflow persistido y su último
-  resumen registrado; no se simula actividad.
-- Tablero en cinco columnas para `pending`, `developing`, `testing`, `failed` y
-  `completed`, con número/límite de iteraciones e informes Testing desplegables
-  por iteración.
-- Timeline cronológico y visor del proyecto virtual con selección de ruta y
-  revisión de artefacto.
+Dirección visual «Sala de control». Los design tokens (color, tipografía,
+espaciado, radios, sombras, duraciones y curvas) viven solo en `app/tokens.css`;
+`app/globals.css` los consume.
+
+- Barra de petición con tres ejemplos, validación visible y respuesta a
+  errores y límites.
+- Cabecera de la ejecución: la petición como título, estado, inicio, duración y
+  tareas aprobadas.
+- Vía de cuatro estaciones (Orquestador, Develop, Testing, Hecha). Cada agente
+  tiene color e icono propios, iguales en estaciones, fichas y registro. El
+  color indica el agente; la forma de la lámpara indica el estado.
+- Cada tarea es una ficha sobre su carril: en cola, Develop, Testing o Hecha.
+  Avanza, y retrocede cuando Testing la rechaza. Sustituye al tablero de cinco
+  columnas, que casi siempre tenía cuatro vacías. Los criterios y los informes
+  de Testing por iteración se despliegan bajo el carril.
+- Registro con lo más reciente arriba y visor del proyecto virtual con
+  selección de ruta y revisión de artefacto.
+- Skeletons mientras carga una ejecución y estados vacíos que explican qué
+  aparecerá y cómo empezar.
 - Suscripción Realtime filtrada por `run_id`, protegida por RLS; carga inicial,
   refetch en cambios y al reconectar. Postgres es la fuente de verdad.
 - Sesión anónima persistente en el navegador, selector de últimas ejecuciones y
   botón para reanudar un run no terminal.
-- Diseño responsive con tema claro/oscuro, uso de teclado, etiquetas accesibles,
-  regiones de estado y texto además del color.
+- Diseño responsive con tema claro/oscuro aplicado antes del primer pintado,
+  contraste AA verificado para todo el texto (3:1 para bordes de controles),
+  foco visible, enlace para saltar al contenido, regiones de estado y texto
+  además del color.
+- Movimiento solo con propósito y solo sobre `transform`/`opacity`. La ficha
+  se desliza entre estaciones (280 ms, curva ease-in-out) con una transición
+  CSS interrumpible. La lámpara late mientras el agente trabaja. Los eventos
+  nuevos entran desde arriba (160 ms). Los botones responden a la pulsación
+  con `scale(0.97)`. Con `prefers-reduced-motion` se eliminan los
+  desplazamientos y se conservan los cambios de color y opacidad.
 
 La migración `20261124140000_store_testing_iteration_reports.sql` guarda
 `p_result` y la iteración en los metadatos del evento Testing; el usuario

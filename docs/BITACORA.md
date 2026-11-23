@@ -476,3 +476,150 @@ navegador no muestra errores ni avisos.
 Ciclo completo plan → develop → testing → completada verificado dos veces con
 modelos gratuitos. Tests (40), TypeScript, lint y build pasan. Queda pendiente
 la aprobación del usuario para cerrar la Fase 3.
+
+## Fase 3.5 — Rediseño visual (2026-11-23)
+
+### Petición
+
+La interfaz funcionaba, pero tenía aspecto de plantilla genérica. El usuario
+pidió que pareciera un producto real hecho por un design engineer, con estas
+condiciones:
+
+- Proponer tres direcciones visuales y esperar su elección.
+- Definir los design tokens en un solo sitio.
+- Dar a cada agente una identidad propia.
+- Evitar los clichés de la IA genérica.
+- Movimiento con propósito, rápido, interrumpible y con soporte para
+  `prefers-reduced-motion`.
+- Microinteracciones, skeletons y estados vacíos útiles.
+- Accesibilidad AA y modo claro/oscuro.
+- Capturas antes y después.
+- No tocar la lógica de los agentes.
+
+### Skills usadas
+
+Skills instaladas en `.claude/skills`:
+
+- **frontend-design**: diagnóstico de la UI anterior, las tres direcciones, el
+  plan de tokens y su revisión frente a los rasgos de diseño generado
+  (calibración de la skill).
+- **emil-design-eng**: decisiones de movimiento y pulido. Para cada animación
+  se decidió si debía existir, con qué propósito, qué curva y duración usar, y
+  cómo se interrumpe. También `:active` con `scale(0.97)`, hover solo en
+  dispositivos con puntero fino, y animar solo `transform`/`opacity`.
+- **review-animations**: no se pudo ejecutar desde Claude Code porque la skill
+  tiene `disable-model-invocation` y solo la puede lanzar el usuario con
+  `/review-animations`. Queda pendiente; ver más abajo.
+
+### Diagnóstico de la UI anterior
+
+Capturas en `docs/screenshots/antes/`.
+
+- Kit de tarjetas SaaS: tarjetas idénticas, una sola sombra y un solo radio,
+  botón con degradado morado y acento índigo.
+- Rótulos en mayúsculas sobre cada bloque, metadatos unidos con puntos medios y
+  el modelo en una monoespaciada desproporcionada.
+- Agentes distinguidos solo por una letra (O/D/T).
+- Tablero de cinco columnas casi siempre con cuatro vacías; la columna útil
+  era estrecha y recortaba el informe de Testing.
+- Un titular de marketing ocupaba el lugar del progreso real.
+- Tipografía Geist, la predeterminada del scaffold.
+
+### Direcciones propuestas
+
+1. **Sala de control**: pizarra, tipografía de rotulación y tareas que avanzan
+   por estaciones.
+2. **Cuaderno de laboratorio**: columna editorial con anotaciones al margen.
+3. **Terminal moderna**: paneles monoespaciados al estilo tmux.
+
+Se recomendó la 1 porque el producto es un pipeline con estados, y el usuario
+la eligió.
+
+### Decisiones de diseño
+
+- **Tokens en un solo sitio** (`app/tokens.css`): superficies, tinta, color por
+  agente (relleno, texto seguro y tinte), tipografía, escala de espaciado de
+  4 px, radios jerárquicos (4 px para controles, 8 px para paneles y redondo
+  solo para lámparas), dos sombras mínimas, y duraciones y curvas
+  (`--ease-out` y `--ease-in-out` personalizadas).
+- **Color = quién, forma = estado**:
+  - Orquestador ocre, Develop cobalto, Testing verde azulado.
+  - Lámpara rellena = hecho, latiendo = trabajando, anillo discontinuo = en
+    espera, rombo rojo = error.
+  - Así el verde de Testing no se confunde con «éxito», y el estado no depende
+    solo del color.
+- **Iconos SVG propios** (`components/agent-identity.tsx`), sin emojis:
+  Orquestador, rama que se divide; Develop, corchetes; Testing, escudo con
+  verificación; Hecha, bandera. Se repiten en estaciones, fichas y registro.
+- **Tipografía**: Barlow Semi Condensed, de rotulación y con cifras tabulares,
+  para títulos. Barlow para el texto. JetBrains Mono solo para código.
+- **Estructura**:
+  - La petición del usuario es el título de la ejecución.
+  - La vía de cuatro estaciones sustituye a las tarjetas y al tablero.
+  - Cada tarea es una ficha que avanza y retrocede cuando Testing la rechaza.
+  - Un trazo muestra el recorrido hecho.
+  - Se eliminaron el titular de marketing y el panel «Cómo funciona».
+- **Sin clichés**: ni degradados, ni rótulos en mayúsculas, ni puntos medios
+  como separadores, ni flechas en los botones, ni tarjetas idénticas en
+  rejilla. Los eventos de proveedor se redactan a partir de sus metadatos («Gemini
+  (gemini-3.5-flash-lite) falló con HTTP 503 en 0,8 s»). El servidor también
+  guarda el texto sin puntos medios; la lógica no cambia.
+- **Movimiento**, solo sobre `transform`/`opacity`:
+  - Ficha: transición CSS de 280 ms con `--ease-in-out`. Se comprobó en el
+    navegador que se interrumpe y redirige a mitad de camino sin saltos.
+  - Trazo de recorrido: `scaleX`.
+  - «Pensando»: anillo que late en la lámpara y en la ficha activa.
+  - Eventos nuevos: 160 ms con `@starting-style`, solo los que llegan con la
+    página abierta (el historial inicial no se anima).
+  - Estación activa: barra superior con `scaleX`.
+  - Con `prefers-reduced-motion` se quitan los desplazamientos y los latidos;
+    se conservan color y opacidad. Verificado emulando la preferencia.
+- **Microinteracciones**:
+  - `:active` con `scale(0.97)` y hover solo con `(hover: hover) and
+    (pointer: fine)`.
+  - Foco visible de 2 px en todos los controles y enlace «Saltar al
+    contenido».
+  - Ctrl + Enter para enviar.
+  - Skeletons al cargar una ejecución y estados vacíos que dicen qué aparecerá
+    y cómo empezar.
+- **Accesibilidad**:
+  - Un script calculó el contraste: todo el texto cumple AA en ambos temas.
+    El ocre de relleno y un nuevo token de borde de control se ajustaron para
+    llegar a 3:1.
+  - Recorrido con Tab en orden lógico y foco visible en todos los elementos.
+  - Tema aplicado antes del primer pintado, según la guía oficial de Next.js
+    16 «Preventing flash before hydration», consultada con Context7.
+  - Sin scroll horizontal a 390 px.
+
+### Archivos
+
+- Nuevos: `app/tokens.css`, `components/agent-identity.tsx` y
+  `components/run-track.tsx`.
+- Reescritos: `app/globals.css` y `app/layout.tsx` (fuentes y script de tema).
+- Reestructurados: el render de `components/dashboard.tsx` (estado, sesión,
+  Realtime y avance de pasos sin cambios), `event-timeline.tsx` y
+  `code-viewer.tsx`.
+- Eliminados: `agent-cards.tsx` y `task-board.tsx`.
+- `lib/dashboard/presentation.ts` y su test no cambian.
+
+### Verificación
+
+- Ejecución real 3 de 10 del día («Paleta CSS accesible»): completada en 14 s
+  (Gemini 503 → Groq en los tres pasos). Se usó para comprobar en vivo el
+  estado «trabajando».
+- 40 tests, TypeScript, lint y build pasan. Con una carga limpia, la consola no
+  muestra errores ni avisos.
+- Capturas en `docs/screenshots/despues/`:
+  - Escritorio y móvil, en claro y en oscuro.
+  - Ejecución en curso.
+  - Informe de Testing desplegado, que ya no se recorta.
+  - Las de `docs/screenshots/antes/` son de la misma ejecución, para
+    comparar.
+
+### Pendiente
+
+- Que el usuario ejecute `/review-animations` sobre el resultado. Lo que
+  encuentre se aplicará en un commit aparte.
+- La ficha no se ha visto desplazarse en una run real, porque los pasos
+  duraron menos de lo que tarda en actualizarse la captura. Su movimiento se
+  verificó cambiando `--stop` en el navegador.
