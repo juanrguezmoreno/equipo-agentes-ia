@@ -4,8 +4,8 @@ Aplicación Next.js para coordinar un Orquestador, Develop y Testing. El estado
 del workflow, los eventos y los artefactos virtuales se persisten en Supabase.
 Consulta [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) para el diseño y sus límites.
 
-> Estado: base y núcleo de agentes implementados. La interfaz se completará en
-> Fase 3; los endpoints requieren una sesión Supabase válida.
+> Estado: las fases 0–2 están completas y la interfaz de la Fase 3 está en
+> desarrollo local. Todavía no hay una URL pública desplegada.
 
 ## Requisitos
 
@@ -29,13 +29,50 @@ Antes de habilitar el flujo de la aplicación, activa **Anonymous Sign-Ins** en
 la configuración de Auth del proyecto Supabase. Esta opción no se cambia
 mediante una migración SQL.
 
-Para las llamadas a modelos, `.env.example` configura Google Gemini 4 Hydrogen
-con la API key de Google AI Studio. La documentación de Google indica que ese
-modelo está disponible en el nivel gratuito estándar al redactar esta guía; los
-modelos y cuotas pueden cambiar. El nivel gratuito puede usar las solicitudes
-para mejorar los productos de Google, así que no envíes datos sensibles.
-`AI_PROVIDER=groq` permite cambiar a Groq con un modelo y key compatibles. No se
-configura fallback automático a un proveedor de pago.
+Las llamadas usan Vercel AI SDK y una cadena de proveedores configurada por
+entorno. Por defecto, `GEMINI_MODEL=gemini-3.5-flash-lite` es el modelo
+principal y `GEMINI_FALLBACK_MODEL=gemini-3.1-flash-lite` el alternativo. Ambos
+admiten structured output y sus páginas oficiales muestran nivel gratuito
+estándar; disponibilidad, cuotas y tratamiento de datos pueden cambiar. Google
+indica que puede usar datos del nivel gratuito para mejorar productos: no envíes
+información sensible. Consulta [Gemini 3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite),
+[Gemini 3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite)
+y [precios](https://ai.google.dev/gemini-api/docs/pricing).
+
+Si `GROQ_API_KEY` está configurada, el siguiente fallback es
+`GROQ_MODEL=openai/gpt-oss-20b`; Groq documenta strict structured outputs para
+ese modelo. El usuario confirmó que su cuenta Groq Free no tiene método de pago
+y que, al superar la cuota, devuelve HTTP 429; esta garantía depende de la cuenta
+concreta. La documentación de Groq publica precios para uso de pago y límites
+exactos por organización, así que configura aquí solo una cuenta Free sin método
+de pago. Consulta [Structured Outputs](https://console.groq.com/docs/structured-outputs),
+[modelos](https://console.groq.com/docs/models) y
+[rate limits](https://console.groq.com/docs/rate-limits).
+
+`AI_PROVIDER=google` (predeterminado) ordena Gemini principal → Gemini
+alternativo → Groq opcional; el cuarto intento repite Groq. Con
+`AI_PROVIDER=groq`, Groq va primero, seguido de ambos Gemini, y el cuarto
+intento repite el último modelo. Solo errores transitorios (timeouts y HTTP
+408/425/429/500/502/503/504) reciben backoff exponencial con jitter; el SDK no
+reintenta por su cuenta. Los eventos registran proveedor, modelo y resultado. Cambia
+`GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL` y `GROQ_MODEL` sin modificar código;
+`AI_MODEL` solo se acepta como fallback heredado de `GROQ_MODEL` cuando
+`AI_PROVIDER=groq`, para que un nombre Gemini antiguo no contamine el fallback.
+
+La migración `20261124160000_allow_groq_fallback_retry.sql` amplía el límite
+persistido a cuatro intentos. Tras revisar una migración nueva, aplícala
+explícitamente al proyecto enlazado con `npx supabase db push --remote`.
+
+Para diagnosticar Gemini localmente, ejecuta `node scripts/diagnose-gemini.ts`.
+El script carga `.env.local` sin imprimir claves, lista los modelos accesibles y
+hace una llamada mínima de texto y otra con el esquema del Orquestador. Las
+pruebas de generación consumen cuota; ejecútalo solo cuando sea necesario.
+
+La aplicación inicia una sesión anónima de Supabase en el navegador; los runs,
+las tareas, los informes y los archivos virtuales quedan asociados a esa sesión.
+La interfaz muestra las actualizaciones de Postgres Realtime y puede reanudar
+pasos guardados. Los archivos generados son artefactos virtuales; no se ejecutan
+en el servidor.
 
 Para enlazar otro proyecto y aplicar las migraciones versionadas:
 

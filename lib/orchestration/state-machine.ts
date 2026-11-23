@@ -177,7 +177,7 @@ export function transitionRunStatus(
   }
 }
 
-export const MAX_PROVIDER_ATTEMPTS = 3;
+export const MAX_PROVIDER_ATTEMPTS = 4;
 
 export function retryDelayMs(
   attemptNumber: number,

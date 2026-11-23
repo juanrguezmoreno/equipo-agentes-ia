@@ -21,13 +21,43 @@ const plan: Plan = {
   ],
 };
 
+const generatedPlan = {
+  ...plan,
+  tasks: plan.tasks.map((task) => ({
+    ...task,
+    checks: task.checks.map((check) => ({
+      type: check.type,
+      path: check.path,
+      value:
+        check.type === "contains_text"
+          ? check.text
+          : check.type === "exports_symbol"
+            ? check.symbol
+            : "",
+    })),
+  })),
+};
+
 describe("agent execution with a simulated model", () => {
   it("validates the Orchestrator response against its plan schema", async () => {
-    const generate = vi.fn(async () => plan);
+    const generate = vi.fn(async () => generatedPlan);
 
     await expect(
       runOrchestrator("Add a contact page.", generate),
     ).resolves.toEqual(plan);
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
+  it("rejects provider output that violates plan constraints", async () => {
+    const invalidPlan = {
+      ...generatedPlan,
+      tasks: [{ ...generatedPlan.tasks[0], dependsOn: [2] }],
+    };
+    const generate = vi.fn(async () => invalidPlan);
+
+    await expect(
+      runOrchestrator("Add a contact page.", generate),
+    ).rejects.toThrow();
     expect(generate).toHaveBeenCalledOnce();
   });
 

@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Equipo de agentes IA",
-  description: "Orquestación de tareas de desarrollo con agentes de IA.",
+  title: "Equipo de agentes IA | Estudio",
+  description:
+    "Un equipo de agentes que planifica, desarrolla y verifica cambios en un proyecto virtual.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

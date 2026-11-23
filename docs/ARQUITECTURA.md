@@ -1,7 +1,7 @@
 # Propuesta de arquitectura (Fase 0)
 
-> Estado: propuesta aprobada. La base y el núcleo de agentes se están
-> implementando por fases; no se debe inferir que la aplicación esté desplegada.
+> Estado: propuesta de Fase 0 aprobada y actualizada con el diseño de la UI de
+> Fase 3. La aplicación sigue sin desplegarse públicamente.
 
 ## Objetivo y límites
 
@@ -39,8 +39,10 @@ flowchart LR
   ORQ --> SDK[Vercel AI SDK<br/>adaptador de proveedor]
   DEV --> SDK
   TEST --> SDK
-  SDK --> GEM[Gemini free tier<br/>proveedor inicial]
-  SDK -. AI_PROVIDER configurable .-> OTHER[Groq u otro proveedor compatible]
+  SDK --> GEM[Gemini principal<br/>gemini-3.5-flash-lite]
+  GEM -. fallo transitorio .-> GEM2[Gemini alternativo<br/>gemini-3.1-flash-lite]
+  GEM2 -. fallo transitorio .-> GROQ[Groq Free opcional<br/>GPT-OSS 20B]
+  SDK -. AI_PROVIDER=groq .-> GROQ
   DB -->|cambios Postgres/Realtime| UI
 ```
 
@@ -50,7 +52,7 @@ un idempotency key por paso e iteración, un lease de 45 segundos y un lock por
 run antes de llamar al modelo. La finalización guarda plan/artefactos/informe,
 actualiza estados y registra eventos en la misma transacción; las llamadas
 repetidas no duplican artefactos ni completan dos veces el mismo intento.
-Errores 429/transitorios se guardan como `next_attempt_at` con backoff
+Errores transitorios se guardan como `next_attempt_at` con backoff
 exponencial acotado y jitter; no se mantiene una función dormida. El cliente
 reanuda cuando llega el momento. Agotados los reintentos de proveedor, el paso
 queda en error visible y recuperable, no en un estado de éxito aparente.
@@ -69,8 +71,12 @@ básica por usuario, no una defensa completa contra creación masiva de cuentas.
   contenido de texto y autor. Inmutable por revisión; el conjunto de revisiones
   más recientes por ruta representa el proyecto virtual.
 - `agent_events`: `id`, `run_id`, `task_id` nullable, agente, tipo de evento,
-  resumen de entrada/salida, estado asociado y `created_at`. Sin claves ni
-  contenidos sensibles.
+  resumen de entrada/salida, metadatos y `created_at`. Los eventos Testing
+  incluirán el informe estructurado completo y el número de iteración, para
+  conservar el historial Develop↔Testing sin sobrescribir informes anteriores.
+  No se guardan claves de proveedor; los informes y resúmenes pueden contener
+  texto derivado de la petición o los artefactos, por lo que no se deben enviar
+  datos sensibles.
 - `step_attempts`: clave idempotente, agente y tarea, intento de proveedor,
   estado, lease y fecha de próximo reintento. Una fila por intento permite
   auditar las llamadas y los errores sin guardar claves ni respuestas crudas
@@ -121,7 +127,13 @@ Esta política se propone para la implementación.
 
 Límite inicial: tres iteraciones Develop↔Testing por tarea, incluyendo la
 primera entrega de Develop. El valor se guarda en el run y no se cambia a mitad
-del flujo. Cada paso de proveedor tiene además un máximo de tres intentos.
+del flujo. Cada paso de proveedor tiene un máximo de cuatro intentos persistidos.
+Con `AI_PROVIDER=google`, el orden es Gemini principal, Gemini alternativo,
+Groq opcional y repetición de Groq; con `AI_PROVIDER=groq`, Groq precede a los
+dos modelos Gemini y el cuarto intento repite el último. Los reintentos se
+limitan a timeouts y HTTP 408, 425, 429, 500, 502, 503 o 504;
+errores permanentes, como HTTP 400, terminan el paso sin reintento. El SDK no
+activa reintentos internos.
 
 ## Contratos de agentes y verificación
 
@@ -145,16 +157,34 @@ parche frente a petición y criterios. Un esquema Zod exige que tanto los checks
 como la revisión pasen para que el informe sea aprobado; el LLM no puede anular
 fallos deterministas ni producir por sí solo el estado `completed`.
 
-El proveedor se selecciona con `AI_PROVIDER` y el modelo con `AI_MODEL`; claves
-separadas según proveedor (`GOOGLE_GENERATIVE_AI_API_KEY`, por ejemplo, o
-`GROQ_API_KEY`). Un módulo adaptador concentra la selección y usa las
-integraciones compatibles con Vercel AI SDK. La interfaz de agentes no debe
-depender del proveedor concreto. El proveedor inicial y modelos exactos se
-confirmarán al implementar, según disponibilidad y cuotas vigentes.
-Las llamadas tienen timeout de 20 segundos y no usan reintentos internos del
-SDK. La salida de cada entrega Develop limita el contenido combinado a 20 000
-caracteres; el contexto virtual acumulado se limita a 20 archivos y 48 000
-caracteres para evitar prompts sin límite.
+Los esquemas que se envían al proveedor son deliberadamente simples para
+mantenerse dentro del subconjunto de JSON Schema y los límites de complejidad
+de Gemini. Después de cada respuesta, el servidor valida de nuevo con los
+esquemas completos, que aplican longitudes, rutas, dependencias y reglas de
+negocio.
+
+`AI_PROVIDER` elige el proveedor prioritario: Google por defecto, o Groq cuando
+se selecciona explícitamente. Con Google, `GEMINI_MODEL` (default
+`gemini-3.5-flash-lite`) precede a `GEMINI_FALLBACK_MODEL` (default
+`gemini-3.1-flash-lite`). Si `GROQ_API_KEY` está configurada, la cadena añade
+`GROQ_MODEL` (default `openai/gpt-oss-20b`); `AI_MODEL` solo se acepta como
+alias heredado para Groq cuando `AI_PROVIDER=groq`, para evitar que un modelo
+Gemini antiguo se use por error con Groq. Ambos modelos Gemini tienen soporte
+documentado de structured outputs y precios de nivel gratuito estándar; Google advierte que
+puede usar los datos del nivel gratuito para mejorar productos. Groq documenta
+strict structured output para GPT-OSS 20B, pero también publica precios de uso
+de pago. En esta implementación solo debe configurarse como fallback una
+cuenta Groq Free sin método de pago; el usuario confirmó esa condición para su
+cuenta y que la cuota agotada devuelve 429. Los límites exactos dependen de la
+organización y se deben verificar en su consola. Nunca se deben enviar datos
+sensibles. El prompt de sistema se envía en el campo `system`; Groq recibe
+`structuredOutputs` y `strictJsonSchema` explícitamente activados. Las llamadas
+tienen timeout de 20 segundos y desactivan los reintentos internos del SDK.
+Cada intento registra proveedor/modelo en
+`agent_events` con resultado y código HTTP, y la UI muestra el último intento
+por agente. La salida de cada entrega Develop limita el contenido combinado a
+20 000 caracteres; el contexto virtual acumulado se limita a 20 archivos y
+48 000 caracteres para evitar prompts sin límite.
 
 ## Estructura de carpetas propuesta
 
@@ -162,12 +192,14 @@ caracteres para evitar prompts sin límite.
 app/
   api/runs/route.ts
   api/runs/[runId]/step/route.ts
-  page.tsx                 # scaffold actual; panel en Fase 3
+  page.tsx
 components/
-  agents/
-  runs/
-  tasks/
-  artifacts/
+  dashboard.tsx
+  agent-cards.tsx
+  task-board.tsx
+  event-timeline.tsx
+  code-viewer.tsx
+  theme-toggle.tsx
 lib/
   agents/                 # prompts y esquemas Zod por agente
   orchestration/           # transiciones puras y reglas de iteración
@@ -191,25 +223,34 @@ Las RPC de workflow y su migración correctiva ya están aplicadas al proyecto
 enlazado; el lint remoto no presenta errores. La UI en Fase 3 impulsará un paso
 cada vez.
 
-## Diseño de la interfaz
+## Interfaz (Fase 3)
 
-- Panel de escritorio de dos zonas: área de ejecución (petición y tablero de
-  tareas) y área de actividad/código; en móvil, secciones apiladas y navegación
-  por pestañas o acordeones.
-- Formulario destacado con límites visibles, estado de envío y errores
-  accionables.
-- Tres tarjetas consistentes de agentes con indicador accesible de estado,
-  última actividad y resumen; no simular actividad que no esté registrada.
-- Tablero con estados `pending`, `developing`, `testing`, `failed` y `completed`,
-  iteración actual/límite y vínculo al informe.
-- Historial cronológico de eventos y revisiones; vista del código virtual con
-  selector de archivo y diffs/revisiones.
-- Suscripción Realtime por `run_id` más RLS; carga inicial por consulta y
-  recuperación por refetch al reconectar. Realtime es una señal de actualización,
-  no la única fuente de verdad.
-- Accesibilidad: etiquetas y foco para controles, `aria-live` para cambios
-  relevantes sin anunciar cada fragmento, contraste, teclado y estados no
-  dependientes solo del color.
+- Formulario destacado con tres peticiones de ejemplo, validación visible y
+  respuesta a errores y límites.
+- Tarjeta por agente con estado derivado del workflow persistido y su último
+  resumen registrado; no se simula actividad.
+- Tablero en cinco columnas para `pending`, `developing`, `testing`, `failed` y
+  `completed`, con número/límite de iteraciones e informes Testing desplegables
+  por iteración.
+- Timeline cronológico y visor del proyecto virtual con selección de ruta y
+  revisión de artefacto.
+- Suscripción Realtime filtrada por `run_id`, protegida por RLS; carga inicial,
+  refetch en cambios y al reconectar. Postgres es la fuente de verdad.
+- Sesión anónima persistente en el navegador, selector de últimas ejecuciones y
+  botón para reanudar un run no terminal.
+- Diseño responsive con tema claro/oscuro, uso de teclado, etiquetas accesibles,
+  regiones de estado y texto además del color.
+
+La migración `20261124140000_store_testing_iteration_reports.sql` guarda
+`p_result` y la iteración en los metadatos del evento Testing; el usuario
+confirmó su aplicación remota. La migración
+`20261124160000_allow_groq_fallback_retry.sql` eleva a cuatro el límite de
+reintentos tanto en el RPC de claim como en el RPC de fallo; el usuario confirmó
+su aplicación y `migration list --remote` la muestra aplicada.
+La migración `20261126170000_align_agent_task_acceptance_criteria.sql` convierte
+las filas antiguas al objeto `{criteria, checks}` y alinea su restricción con el
+formato que escribe `complete_agent_step`; el usuario confirmó su aplicación y
+una consulta remota read-only verificó la restricción.
 
 ## Riesgos y mitigaciones
 
@@ -224,6 +265,7 @@ cada vez.
 | Coste/abuso en endpoint público | Cinco runs por propietario/hora, límites de cuerpo/contexto/tokens e iteraciones; protección adicional por IP si la infraestructura lo permite. |
 | Realtime duplica o pierde eventos | Postgres como fuente de verdad, carga inicial, reconexión/refetch y eventos append-only. |
 | Modelo/proveedor deja de ser compatible | Adaptador separado y pruebas simuladas; secretos y selección por variables. |
+| Groq podría generar cargos en una cuenta con facturación | El fallback solo debe configurarse con cuenta Free sin método de pago; confirmar límites en consola y no asumir que las cuotas son ilimitadas. |
 | Publicar gratis no equivale a garantía de disponibilidad | Verificar elegibilidad, límites de Vercel Hobby/Supabase y URL al desplegar; documentar límites. |
 
 ## Fuentes consultadas
@@ -237,6 +279,12 @@ cada vez.
 - [Supabase CLI: migraciones locales](https://supabase.com/docs/guides/local-development/database-migrations)
 - [Supabase Postgres: RLS y grants](https://supabase.com/docs/guides/database/postgres/row-level-security)
 - [Next.js: archivo Proxy](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
+- [Gemini API: modelo Gemini 3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)
+- [Gemini API: modelo Gemini 3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite)
+- [Gemini API: precios](https://ai.google.dev/gemini-api/docs/pricing)
+- [Groq: strict structured outputs](https://console.groq.com/docs/structured-outputs)
+- [Groq: modelos y precios](https://console.groq.com/docs/models)
+- [Groq: rate limits](https://console.groq.com/docs/rate-limits)
 
 La búsqueda de herramientas de esta sesión no expuso Context7 ni los MCP de
 gestión de Supabase/Vercel. Estas referencias se consultaron directamente en

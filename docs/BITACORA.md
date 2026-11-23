@@ -176,3 +176,191 @@ El commit de implementación es `5645fd4`
 (`feat(agents): implement persisted agent step workflow`). Esta bitácora y la
 documentación de arquitectura/uso se registran en un commit documental separado
 antes del push de cierre de fase.
+
+## Fase 3 — Interfaz (en curso)
+
+### Petición
+
+El usuario habilitó Anonymous Sign-Ins y preparó `.env.local`, indicando que no
+se lean ni muestren sus valores; solo se puede comprobar la presencia de las
+variables. Aprobó la Fase 3 y pidió tarjetas claras para los tres agentes,
+timeline Realtime, tablero con estado e iteración, historial del código e
+informes por iteración, ejemplos de un clic, diseño responsive/accesible con
+modo oscuro y una prueba real con Playwright más capturas. También pidió
+verificar en documentación actual un modelo Gemini del nivel gratuito y
+configurarlo con una variable de entorno.
+
+### Implementado localmente
+
+- Sustituida la portada de scaffold por el panel de equipo, petición con tres
+  ejemplos, selector de ejecuciones, tarjetas de agente, tablero de cinco
+  estados, timeline, visor de revisiones virtuales y guía breve del flujo.
+- La UI inicia sesión anónima si no hay sesión, carga el historial con RLS y
+  usa suscripciones Realtime filtradas por `run_id`, con consulta inicial,
+  refresco al recibir eventos y refetch ante desconexión.
+- El navegador impulsa pasos secuenciales del endpoint corto, espera la fecha de
+  reintento o vencimiento del lease, muestra errores y permite reanudar runs no
+  terminales. Hay un límite local de pasos por sesión; la máquina de estados y
+  los límites de iteración permanecen en Postgres.
+- Se añadió vista de criterios y reportes Testing. La última versión de un
+  informe existente se recupera temporalmente desde `agent_tasks`; para mostrar
+  el cuerpo completo de todas las iteraciones se preparó la migración
+  `20261124140000_store_testing_iteration_reports.sql`. El usuario confirmó
+  que la aplicó al proyecto remoto.
+- Tema claro/oscuro con preferencia persistida, estilos responsive, controles
+  etiquetados y mensajes accesibles.
+- Google Gemini usa `GEMINI_MODEL`, cuyo default actual es
+  `gemini-3.5-flash-lite`; Groq usa `GROQ_MODEL`, con compatibilidad heredada
+  con `AI_MODEL` cuando Groq es el proveedor prioritario.
+- La documentación oficial consultada el 24-11-2026 lista Gemini 4 Hydrogen y
+  Gemini 3.8 Flash como modelos estables, gratuitos en el nivel estándar y
+  compatibles con salida estructurada. Las primeras ejecuciones reales del
+  Orquestador agotaron los reintentos (timeouts y respuestas 503). Se seleccionó
+  Gemini 3.5 Flash-Lite como default: también es estable, admite salida
+  estructurada, y la documentación lo describe como optimizado para tareas
+  agénticas de baja latencia. El nivel estándar indica tokens de entrada/salida
+  sin coste. Se mantiene `GEMINI_MODEL` configurable. Google advierte que el
+  contenido de este nivel puede usarse para mejorar productos; no enviar datos
+  sensibles.
+
+### Herramientas, validación y pendiente
+
+- Context7 y el MCP de Supabase no estuvieron disponibles; se consultaron
+  páginas oficiales actuales de Gemini y se mantuvo el registro previo de las
+  consultas oficiales de Next.js, AI SDK y Supabase.
+- `npm test` (19 pruebas), `npx tsc --noEmit`, `npm run lint` y `npm run build`
+  pasan tras la implementación y las últimas correcciones.
+- Playwright confirmó el inicio de sesión anónima y la suscripción Realtime.
+  Cinco ejecuciones reales no completaron el flujo: dos con Gemini Hydrogen
+  agotaron reintentos por error/timeouts, una con Gemini 3.8 Flash recibió
+  503/timeouts y las dos con Gemini 3.5 Flash-Lite devolvieron HTTP 400. La
+  última se hizo después de que el usuario confirmara que había verificado o
+  corregido la configuración. Una consulta sin credenciales recibió HTTP 403,
+  confirmando conectividad con el endpoint; no se consultaron ni mostraron
+  valores de `.env.local`. No se inició una sexta ejecución para respetar el
+  límite de cuota por propietario.
+- A petición del usuario se creó `scripts/diagnose-gemini.ts`. Sin imprimir la
+  clave, el script confirmó que `gemini-3.5-flash-lite` está disponible para
+  este proyecto y que una llamada simple de texto funciona. La llamada con el
+  `PlanSchema` original devolvió HTTP 400: Gemini rechaza su complejidad de
+  restricciones (arrays acotados, longitudes, regex y dependencias numéricas).
+  Se separaron esquemas de generación simplificados de los esquemas completos
+  de validación en servidor, y se añadió logging del mensaje del proveedor con
+  redacción de claves.
+- Tras esos cambios se intentó una sola ejecución real en Playwright; Supabase
+  primero la bloqueó con HTTP 429 (`Run limit reached. Try again in an hour.`)
+  antes de llamar a Gemini. Tras esperar el reinicio y repetir una sola vez, el
+  run se creó, pero Gemini devolvió HTTP 503 en los tres intentos configurados:
+  el mensaje indica alta demanda temporal. El esquema simplificado ya no
+  devolvió el error 400 anterior. No se hicieron más solicitudes.
+- La captura de Playwright muestra la interfaz y el estado fallido del último
+  run. No demuestra un ciclo exitoso Orquestador–Develop–Testing. Falta que el
+  proveedor vuelva a estar disponible para verificar el flujo completo; después
+  se puede hacer la validación final, commit y push.
+- El usuario confirmó que aplicó la migración de informes mediante
+  `npx supabase db push --remote`.
+
+### Resiliencia de proveedores (2026-11-26)
+
+#### Petición y decisiones
+
+Tras los HTTP 503 de Gemini, el usuario pidió que cada paso pruebe Gemini
+principal → otro Gemini gratuito → Groq Free, con reintentos exponenciales con
+jitter solo ante errores transitorios, proveedor/modelo visibles en eventos y
+tarjetas, tests simulados y otra ejecución real. Confirmó que su cuenta Groq
+Free no tiene método de pago, no genera cargos y devuelve 429 al agotar límites.
+
+Se verificaron las páginas oficiales actuales: Gemini 3.5 Flash-Lite y
+3.1 Flash-Lite son estables, admiten structured output y sus páginas listan
+precios de entrada/salida sin coste en Standard Free Tier; Groq GPT-OSS 20B
+admite strict structured output, pero la documentación también publica precios
+de pago y límites base del Developer plan. Los límites exactos dependen de la
+organización; para mantener el coste cero, Groq solo se debe configurar con una
+cuenta Free sin método de pago. Fuentes: documentación oficial de [Gemini
+3.5](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite),
+[Gemini 3.1](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite),
+[precios Gemini](https://ai.google.dev/gemini-api/docs/pricing),
+[Groq structured outputs](https://console.groq.com/docs/structured-outputs),
+[modelos Groq](https://console.groq.com/docs/models) y
+[rate limits Groq](https://console.groq.com/docs/rate-limits).
+
+#### Implementado localmente
+
+- Cadena configurable: Gemini principal (`GEMINI_MODEL`), Gemini alternativo
+  (`GEMINI_FALLBACK_MODEL`) y Groq (`GROQ_MODEL`) si hay clave. Groq puede ser
+  primario con `AI_PROVIDER=groq`; `AI_MODEL` se usa como alias heredado solo en
+  ese caso, para que una configuración antigua de Gemini no seleccione un
+  modelo Gemini en la API de Groq.
+- Default Gemini principal `gemini-3.5-flash-lite`, fallback
+  `gemini-3.1-flash-lite` y Groq `openai/gpt-oss-20b`. Los esquemas enviados son
+  simples y estrictos; el servidor vuelve a validar cada respuesta con los
+  esquemas completos de Zod.
+- Límite ampliado a cuatro intentos persistidos: Gemini principal, Gemini
+  alternativo, Groq y un reintento Groq. Cada intento es una invocación corta;
+  la RPC programa el siguiente usando backoff exponencial con jitter. El SDK no
+  hace reintentos internos.
+- Reintentos solo para timeout y HTTP 408, 425, 429, 500, 502, 503 y 504. El
+  `Retry-After` del proveedor se acota; errores permanentes como HTTP 400 no se
+  reintentan.
+- Se registra `provider_attempt` con proveedor, modelo, número de intento,
+  resultado y código HTTP. Las tarjetas muestran el último proveedor/modelo y
+  el timeline etiqueta el evento.
+- Se añadieron tests simulados para selección de modelos, cadena, fallback,
+  redacción de claves, clasificación transitoria, presentación del proveedor y
+  backoff.
+- Se añadió la migración
+  `20261124160000_allow_groq_fallback_retry.sql`; eleva el límite en los RPC de
+  claim y fallo. El usuario aplica las migraciones remotas; no se ejecutó
+  `db push` desde esta sesión.
+
+#### Validación y estado
+
+La validación local termina con 35 tests, lint, TypeScript y build correctos.
+El usuario aplicó las migraciones hasta `20261124160000`; `migration list
+--remote` confirma la versión y `db lint --linked --schema public --fail-on
+error` no encuentra errores en el esquema remoto. `.env.local` sigue ignorado
+por Git; se comprobó únicamente la presencia de las claves necesarias, sin leer
+ni mostrar sus valores.
+
+Playwright ha lanzado cuatro runs reales de contacto:
+
+1. El primer run acabó con `agent_step_error`, sin plan.
+2. Gemini 3.5 y 3.1 devolvieron 503; el fallback Groq dio 404 porque el alias
+   `AI_MODEL` del entorno tenía un nombre Gemini.
+3. Tras corregir el alias, Gemini 3.5 y 3.1 volvieron a devolver 503; Groq
+   `openai/gpt-oss-20b` generó salida, pero Zod rechazó rutas y una dependencia.
+   Se precisó el prompt con las restricciones de ruta y referencias 1-based.
+4. Con el prompt ajustado, Gemini 3.5 generó el plan. Supabase rechazó guardarlo
+   con `23514`: `agent_tasks_acceptance_criteria_check` exigía un array, aunque
+   `complete_agent_step` persiste `{criteria, checks}`. Una consulta remota
+   read-only confirmó la definición de la restricción.
+
+Se preparó `20261126170000_align_agent_task_acceptance_criteria.sql`: convierte
+filas antiguas de array al objeto actual y exige arrays `criteria`/`checks`
+dentro del objeto. El usuario confirmó que la aplicó; la consulta remota
+read-only confirmó la restricción y el valor por defecto, y `db lint` no
+encontró errores. El run 4 se reanudó después de aplicar la migración.
+
+Como regla permanente, el usuario autorizó hasta 10 ejecuciones reales al día
+con modelos verificados en planes gratuitos sin pedir permiso. Se deben
+inspeccionar y diagnosticar logs entre ejecuciones y no repetir a ciegas; pedir
+permiso solo para superar el límite o si existe posibilidad de coste.
+
+#### Diagnóstico posterior (2026-11-26)
+
+- Tras el HTTP 400 de Groq, se consultó el código del proveedor AI SDK instalado:
+  GPT-OSS 20B se reconoce para razonamiento, pero su capacidad de JSON Schema
+  figura como desconocida en el catálogo local. Se cambió el prompt de sistema
+  para enviarlo como mensaje `system` separado (también a Groq), se activaron
+  explícitamente `structuredOutputs` y `strictJsonSchema` y se acotó el plan
+  para reducir el tamaño potencial de la salida.
+- Tests, lint, TypeScript y build volvieron a pasar antes de la nueva prueba.
+- Se inició un quinto run real. Gemini 3.5 Flash-Lite y 3.1 Flash-Lite volvieron
+  a responder HTTP 503; el siguiente paso acabó en `provider_timeout` tras unos
+  20 segundos, sin código HTTP. El flujo no llegó a Develop ni Testing.
+- Esta prueba se inició cuando ya se había alcanzado el límite diario
+  conservador de llamadas a modelo. No se harán más llamadas reales hoy; la
+  siguiente se pospone hasta el reinicio diario y solo después de revisar estos
+  logs y la configuración.
+- La Fase 3 continúa abierta: no hay ciclo real exitoso, capturas de éxito,
+  commit/push de la fase ni despliegue público.

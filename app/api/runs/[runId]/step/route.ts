@@ -4,6 +4,8 @@ import {
   runOrchestrator,
   runTesting,
 } from "@/lib/agents";
+import type { AgentGenerationOptions } from "@/lib/agents";
+import type { ProviderModel } from "@/lib/ai/model-config";
 import {
   ClaimedStepSchema,
   MAX_FILE_CONTENT_CHARS,
@@ -128,10 +130,22 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   let result: Json;
+  let selectedProvider: ProviderModel | null = null;
+  const generationOptions: AgentGenerationOptions = {
+    attemptNumber: claim.data.attemptNumber,
+    onProviderSelected: (target) => {
+      selectedProvider = target;
+    },
+  };
+
   try {
     switch (claim.data.agent) {
       case "orchestrator":
-        result = await runOrchestrator(claim.data.request);
+        result = await runOrchestrator(
+          claim.data.request,
+          undefined,
+          generationOptions,
+        );
         break;
       case "develop": {
         const task = requireTask(claim.data);
@@ -145,7 +159,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
             previousTestReport: task.previousTestReport,
           },
           projectFiles,
-        });
+        }, undefined, generationOptions);
         if (
           exceedsProjectLimits(projectFiles, development.files)
         ) {
@@ -173,14 +187,32 @@ export async function POST(_request: Request, { params }: RouteContext) {
             acceptanceCriteria: task.acceptanceCriteria,
           },
           projectFiles,
-        });
+        }, undefined, generationOptions);
         break;
       }
     }
   } catch (error) {
     const classified = classifyAgentError(error);
+    if (selectedProvider) {
+      await recordProviderAttempt(admin, {
+        runId: parsedRunId.data,
+        taskId: claim.data.task?.id ?? null,
+        agent: claim.data.agent,
+        attemptNumber: claim.data.attemptNumber,
+        target: selectedProvider,
+        outcome: {
+          kind: "failed",
+          statusCode: classified.providerStatusCode,
+          retryable: classified.retryable,
+        },
+      });
+    }
     console.error("Agent step failed.", {
       code: classified.code,
+      errorName: classified.errorName,
+      providerStatusCode: classified.providerStatusCode,
+      providerMessage: classified.providerMessage,
+      validationPaths: classified.validationPaths,
       runId: parsedRunId.data,
       attemptId: claim.data.attemptId,
     });
@@ -190,6 +222,17 @@ export async function POST(_request: Request, { params }: RouteContext) {
       claim.data.attemptNumber,
       classified,
     );
+  }
+
+  if (selectedProvider) {
+    await recordProviderAttempt(admin, {
+      runId: parsedRunId.data,
+      taskId: claim.data.task?.id ?? null,
+      agent: claim.data.agent,
+      attemptNumber: claim.data.attemptNumber,
+      target: selectedProvider,
+      outcome: { kind: "succeeded" },
+    });
   }
 
   const { data: completion, error: completionError } = await admin.rpc(
@@ -213,6 +256,63 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   return Response.json({ status: "step_completed", completion });
+}
+
+interface ProviderAttemptEventInput {
+  runId: string;
+  taskId: string | null;
+  agent: z.infer<typeof ClaimedStepSchema>["agent"];
+  attemptNumber: number;
+  target: ProviderModel;
+  outcome:
+    | { kind: "succeeded" }
+    | {
+        kind: "failed";
+        statusCode?: number;
+        retryable: boolean;
+      };
+}
+
+async function recordProviderAttempt(
+  admin: ReturnType<typeof createAdminClient>,
+  input: ProviderAttemptEventInput,
+): Promise<void> {
+  const providerName = input.target.provider === "google" ? "Gemini" : "Groq";
+  const statusSummary =
+    input.outcome.kind === "failed"
+      ? input.outcome.statusCode
+        ? `HTTP ${input.outcome.statusCode}`
+        : "error"
+      : "respuesta generada";
+  const metadata = {
+    provider: input.target.provider,
+    model: input.target.modelId,
+    attempt: input.attemptNumber,
+    outcome: input.outcome.kind,
+    ...(input.outcome.kind === "failed" && input.outcome.statusCode
+      ? { statusCode: input.outcome.statusCode }
+      : {}),
+    ...(input.outcome.kind === "failed"
+      ? { retryable: input.outcome.retryable }
+      : {}),
+  };
+  const { error } = await admin.from("agent_events").insert({
+    run_id: input.runId,
+    task_id: input.taskId,
+    agent: input.agent,
+    event_type: "provider_attempt",
+    output_summary: `${providerName} · ${input.target.modelId} · ${statusSummary}`,
+    metadata,
+  });
+
+  if (error) {
+    console.error("Could not record provider attempt.", {
+      code: error.code,
+      runId: input.runId,
+      attemptNumber: input.attemptNumber,
+      provider: input.target.provider,
+    });
+  }
 }
 
 function requireTask(step: z.infer<typeof ClaimedStepSchema>) {

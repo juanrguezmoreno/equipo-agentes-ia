@@ -42,6 +42,11 @@ provisional until approved.
 - Keep model selection configurable via environment variables. Free-tier
   quotas, model availability, and hosting limits can change; disclose rather
   than promise unlimited free usage.
+- During development, make up to 10 real application runs per day using models
+  that are verified to be on the configured free tier without asking first.
+  Inspect and diagnose the logs after each run before starting another; never
+  repeat a failed run blindly. Ask the user before exceeding 10 runs in a day or
+  whenever a provider, account, or configuration could incur a charge.
 
 ## Phase journal
 

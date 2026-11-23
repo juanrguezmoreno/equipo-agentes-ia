@@ -134,6 +134,25 @@ export const PlanSchema = z
     }
   });
 
+export const PlanGenerationSchema = z.object({
+  summary: z.string(),
+  tasks: z.array(
+    z.object({
+      title: z.string(),
+      description: z.string(),
+      acceptanceCriteria: z.array(z.string()),
+      checks: z.array(
+        z.object({
+          type: z.enum(["file_exists", "contains_text", "exports_symbol"]),
+          path: z.string(),
+          value: z.string(),
+        }).strict(),
+      ),
+      dependsOn: z.array(z.number()),
+    }).strict(),
+  ),
+}).strict();
+
 export const DevelopmentOutputSchema = z
   .object({
     summary: z.string().trim().min(1).max(1000),
@@ -173,6 +192,16 @@ export const DevelopmentOutputSchema = z
     }
   });
 
+export const DevelopmentGenerationSchema = z.object({
+  summary: z.string(),
+  files: z.array(
+    z.object({
+      path: z.string(),
+      content: z.string(),
+    }).strict(),
+  ),
+}).strict();
+
 export const ReviewFindingSchema = z
   .object({
     severity: z.enum(["critical", "major", "minor"]),
@@ -189,6 +218,19 @@ export const TestingReviewSchema = z
     findings: z.array(ReviewFindingSchema).max(12),
   })
   .strict();
+
+export const TestingReviewGenerationSchema = z.object({
+  passed: z.boolean(),
+  summary: z.string(),
+  findings: z.array(
+    z.object({
+      severity: z.enum(["critical", "major", "minor"]),
+      criterion: z.string(),
+      message: z.string(),
+      evidence: z.string(),
+    }).strict(),
+  ),
+}).strict();
 
 export const DeterministicCheckResultSchema = z
   .object({

@@ -1,6 +1,9 @@
 import {
   DevelopmentOutputSchema,
+  DevelopmentGenerationSchema,
+  PlanGenerationSchema,
   PlanSchema,
+  TestingReviewGenerationSchema,
   TestReportSchema,
   TestingReviewSchema,
   type DevelopmentOutput,
@@ -9,6 +12,7 @@ import {
   type TestReport,
   type TestingReview,
 } from "./schemas";
+import type { ProviderModel } from "@/lib/ai/model-config";
 import {
   DEVELOP_SYSTEM_PROMPT,
   ORCHESTRATOR_SYSTEM_PROMPT,
@@ -24,6 +28,11 @@ export type StructuredGenerator = (
   request: StructuredGenerationRequest,
 ) => Promise<unknown>;
 
+export interface AgentGenerationOptions {
+  attemptNumber: number;
+  onProviderSelected?: (target: ProviderModel) => void;
+}
+
 const MAX_PLAN_OUTPUT_TOKENS = 1800;
 const MAX_DEVELOP_OUTPUT_TOKENS = 5000;
 const MAX_REVIEW_OUTPUT_TOKENS = 1800;
@@ -31,15 +40,33 @@ const MAX_REVIEW_OUTPUT_TOKENS = 1800;
 export async function runOrchestrator(
   userRequest: string,
   generate: StructuredGenerator = generateStructuredOutput,
+  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
 ): Promise<Plan> {
   const result = await generate({
-    schema: PlanSchema,
+    schema: PlanGenerationSchema,
     systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
     prompt: JSON.stringify({ userRequest }),
     maxOutputTokens: MAX_PLAN_OUTPUT_TOKENS,
+    ...generationOptions,
   });
 
-  return PlanSchema.parse(result);
+  const generatedPlan = PlanGenerationSchema.parse(result);
+  return PlanSchema.parse({
+    ...generatedPlan,
+    tasks: generatedPlan.tasks.map((task) => ({
+      ...task,
+      checks: task.checks.map(({ type, path, value }) => {
+        switch (type) {
+          case "file_exists":
+            return { type, path };
+          case "contains_text":
+            return { type, path, text: value };
+          case "exports_symbol":
+            return { type, path, symbol: value };
+        }
+      }),
+    })),
+  });
 }
 
 export interface DevelopAgentInput {
@@ -57,12 +84,14 @@ export interface DevelopAgentInput {
 export async function runDevelop(
   input: DevelopAgentInput,
   generate: StructuredGenerator = generateStructuredOutput,
+  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
 ): Promise<DevelopmentOutput> {
   const result = await generate({
-    schema: DevelopmentOutputSchema,
+    schema: DevelopmentGenerationSchema,
     systemPrompt: DEVELOP_SYSTEM_PROMPT,
     prompt: JSON.stringify(input),
     maxOutputTokens: MAX_DEVELOP_OUTPUT_TOKENS,
+    ...generationOptions,
   });
 
   return DevelopmentOutputSchema.parse(result);
@@ -86,12 +115,14 @@ export interface TestingAgentInput {
 export async function runTestingReview(
   input: TestingAgentInput,
   generate: StructuredGenerator = generateStructuredOutput,
+  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
 ): Promise<TestingReview> {
   const result = await generate({
-    schema: TestingReviewSchema,
+    schema: TestingReviewGenerationSchema,
     systemPrompt: TESTING_SYSTEM_PROMPT,
     prompt: JSON.stringify(input),
     maxOutputTokens: MAX_REVIEW_OUTPUT_TOKENS,
+    ...generationOptions,
   });
 
   return TestingReviewSchema.parse(result);
@@ -100,6 +131,7 @@ export async function runTestingReview(
 export async function runTesting(
   input: Omit<TestingAgentInput, "deterministicChecks">,
   generate: StructuredGenerator = generateStructuredOutput,
+  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
 ): Promise<TestReport> {
   const files = Object.entries(input.projectFiles).map(([path, content]) => ({
     path,
@@ -123,6 +155,7 @@ export async function runTesting(
   const review = await runTestingReview(
     { ...input, deterministicChecks },
     generate,
+    generationOptions,
   );
   return TestReportSchema.parse({
     passed:

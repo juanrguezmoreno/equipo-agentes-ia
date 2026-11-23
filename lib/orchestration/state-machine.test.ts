@@ -64,6 +64,12 @@ describe("workflow state machine", () => {
   it("uses bounded exponential retry delays and stops at the attempt limit", () => {
     expect(retryDelayMs(1, () => 0.5)).toBe(1000);
     expect(retryDelayMs(2, () => 0.5)).toBe(2000);
-    expect(retryDelayMs(3, () => 0.5)).toBeNull();
+    expect(retryDelayMs(3, () => 0.5)).toBe(4000);
+    expect(retryDelayMs(4, () => 0.5)).toBeNull();
+  });
+
+  it("adds bounded jitter to transient retry delays", () => {
+    expect(retryDelayMs(1, () => 0)).toBe(750);
+    expect(retryDelayMs(1, () => 1)).toBe(1250);
   });
 });
