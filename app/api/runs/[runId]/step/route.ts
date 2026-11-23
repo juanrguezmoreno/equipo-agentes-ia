@@ -5,7 +5,7 @@ import {
   runTesting,
 } from "@/lib/agents";
 import type { AgentGenerationOptions } from "@/lib/agents";
-import type { ProviderModel } from "@/lib/ai/model-config";
+import type { ProviderAttemptRecord } from "@/lib/ai/provider-attempt";
 import {
   ClaimedStepSchema,
   MAX_FILE_CONTENT_CHARS,
@@ -19,7 +19,14 @@ import { getAuthenticatedUser } from "@/lib/supabase/authenticated-user";
 import type { Json } from "@/types/database";
 import { z } from "zod";
 
-export const maxDuration = 30;
+// Vercel Hobby allows up to 300 s with Fluid compute, but the step lease is
+// capped at 60 s in Postgres; the invocation must finish before it expires.
+export const maxDuration = 60;
+
+const STEP_LEASE_SECONDS = 60;
+// Time all provider calls may use, measured from the start of the request.
+// The remainder covers auth, the claim, artifact loading and persistence.
+const MODEL_BUDGET_MS = 45_000;
 
 const RunIdSchema = z.uuid();
 
@@ -28,6 +35,7 @@ interface RouteContext {
 }
 
 export async function POST(_request: Request, { params }: RouteContext) {
+  const requestStartedAt = Date.now();
   const { runId: rawRunId } = await params;
   const parsedRunId = RunIdSchema.safeParse(rawRunId);
   if (!parsedRunId.success) {
@@ -46,7 +54,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
     {
       p_run_id: parsedRunId.data,
       p_owner_id: user.id,
-      p_lease_seconds: 45,
+      p_lease_seconds: STEP_LEASE_SECONDS,
     },
   );
 
@@ -130,12 +138,18 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   let result: Json;
-  let selectedProvider: ProviderModel | null = null;
+  const providerAttempts: ProviderAttemptRecord[] = [];
   const generationOptions: AgentGenerationOptions = {
-    attemptNumber: claim.data.attemptNumber,
-    onProviderSelected: (target) => {
-      selectedProvider = target;
+    budgetMs: MODEL_BUDGET_MS - (Date.now() - requestStartedAt),
+    onProviderAttempt: (record) => {
+      providerAttempts.push(record);
     },
+  };
+  const providerEventContext = {
+    runId: parsedRunId.data,
+    taskId: claim.data.task?.id ?? null,
+    agent: claim.data.agent,
+    stepAttempt: claim.data.attemptNumber,
   };
 
   try {
@@ -193,26 +207,17 @@ export async function POST(_request: Request, { params }: RouteContext) {
     }
   } catch (error) {
     const classified = classifyAgentError(error);
-    if (selectedProvider) {
-      await recordProviderAttempt(admin, {
-        runId: parsedRunId.data,
-        taskId: claim.data.task?.id ?? null,
-        agent: claim.data.agent,
-        attemptNumber: claim.data.attemptNumber,
-        target: selectedProvider,
-        outcome: {
-          kind: "failed",
-          statusCode: classified.providerStatusCode,
-          retryable: classified.retryable,
-        },
-      });
-    }
+    await recordProviderAttempts(admin, providerEventContext, providerAttempts);
     console.error("Agent step failed.", {
       code: classified.code,
       errorName: classified.errorName,
       providerStatusCode: classified.providerStatusCode,
       providerMessage: classified.providerMessage,
       validationPaths: classified.validationPaths,
+      providers: providerAttempts.map(
+        (attempt) =>
+          `${attempt.target.provider}:${attempt.target.modelId}:${attempt.statusCode ?? attempt.errorCode ?? attempt.outcome}:${attempt.durationMs}ms`,
+      ),
       runId: parsedRunId.data,
       attemptId: claim.data.attemptId,
     });
@@ -224,16 +229,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
     );
   }
 
-  if (selectedProvider) {
-    await recordProviderAttempt(admin, {
-      runId: parsedRunId.data,
-      taskId: claim.data.task?.id ?? null,
-      agent: claim.data.agent,
-      attemptNumber: claim.data.attemptNumber,
-      target: selectedProvider,
-      outcome: { kind: "succeeded" },
-    });
-  }
+  await recordProviderAttempts(admin, providerEventContext, providerAttempts);
 
   const { data: completion, error: completionError } = await admin.rpc(
     "complete_agent_step",
@@ -258,60 +254,64 @@ export async function POST(_request: Request, { params }: RouteContext) {
   return Response.json({ status: "step_completed", completion });
 }
 
-interface ProviderAttemptEventInput {
+interface ProviderEventContext {
   runId: string;
   taskId: string | null;
   agent: z.infer<typeof ClaimedStepSchema>["agent"];
-  attemptNumber: number;
-  target: ProviderModel;
-  outcome:
-    | { kind: "succeeded" }
-    | {
-        kind: "failed";
-        statusCode?: number;
-        retryable: boolean;
-      };
+  stepAttempt: number;
 }
 
-async function recordProviderAttempt(
+async function recordProviderAttempts(
   admin: ReturnType<typeof createAdminClient>,
-  input: ProviderAttemptEventInput,
+  context: ProviderEventContext,
+  attempts: ProviderAttemptRecord[],
 ): Promise<void> {
-  const providerName = input.target.provider === "google" ? "Gemini" : "Groq";
-  const statusSummary =
-    input.outcome.kind === "failed"
-      ? input.outcome.statusCode
-        ? `HTTP ${input.outcome.statusCode}`
-        : "error"
-      : "respuesta generada";
-  const metadata = {
-    provider: input.target.provider,
-    model: input.target.modelId,
-    attempt: input.attemptNumber,
-    outcome: input.outcome.kind,
-    ...(input.outcome.kind === "failed" && input.outcome.statusCode
-      ? { statusCode: input.outcome.statusCode }
-      : {}),
-    ...(input.outcome.kind === "failed"
-      ? { retryable: input.outcome.retryable }
-      : {}),
-  };
-  const { error } = await admin.from("agent_events").insert({
-    run_id: input.runId,
-    task_id: input.taskId,
-    agent: input.agent,
-    event_type: "provider_attempt",
-    output_summary: `${providerName} · ${input.target.modelId} · ${statusSummary}`,
-    metadata,
-  });
+  if (attempts.length === 0) {
+    return;
+  }
 
-  if (error) {
-    console.error("Could not record provider attempt.", {
-      code: error.code,
-      runId: input.runId,
-      attemptNumber: input.attemptNumber,
-      provider: input.target.provider,
-    });
+  const rows = attempts.map((attempt, index) => {
+    const providerName = attempt.target.provider === "google" ? "Gemini" : "Groq";
+    const statusSummary =
+      attempt.outcome === "failed"
+        ? attempt.statusCode
+          ? `HTTP ${attempt.statusCode}`
+          : attempt.errorCode === "provider_timeout"
+            ? "timeout"
+            : "error"
+        : "respuesta generada";
+    return {
+      run_id: context.runId,
+      task_id: context.taskId,
+      agent: context.agent,
+      event_type: "provider_attempt",
+      output_summary: `${providerName} · ${attempt.target.modelId} · ${statusSummary}`,
+      metadata: {
+        provider: attempt.target.provider,
+        model: attempt.target.modelId,
+        attempt: context.stepAttempt,
+        chainPosition: index + 1,
+        outcome: attempt.outcome,
+        durationMs: attempt.durationMs,
+        ...(attempt.statusCode ? { statusCode: attempt.statusCode } : {}),
+        ...(attempt.outcome === "failed"
+          ? { retryable: attempt.retryable ?? false }
+          : {}),
+      },
+    };
+  });
+  // One insert per row: rows in a single statement share now() and the
+  // timeline would show the chain out of order.
+  for (const row of rows) {
+    const { error } = await admin.from("agent_events").insert(row);
+    if (error) {
+      console.error("Could not record provider attempt.", {
+        code: error.code,
+        runId: context.runId,
+        stepAttempt: context.stepAttempt,
+      });
+      return;
+    }
   }
 }
 

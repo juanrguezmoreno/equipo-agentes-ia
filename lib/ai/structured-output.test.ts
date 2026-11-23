@@ -16,24 +16,23 @@ vi.mock("./model", () => ({
 }));
 
 vi.mock("./provider-attempt", () => ({
-  executeProviderAttempt: vi.fn(),
+  executeProviderChain: vi.fn(),
 }));
 
 import { generateText } from "ai";
 import { generateStructuredOutput } from "./structured-output";
-import { executeProviderAttempt } from "./provider-attempt";
+import { executeProviderChain } from "./provider-attempt";
 
 describe("generateStructuredOutput", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(executeProviderAttempt).mockImplementation(
-      async (_attemptNumber, invoke, onSelected) => {
+    vi.mocked(executeProviderChain).mockImplementation(
+      async (invoke) => {
         const target: ProviderModel = {
           provider: "groq",
           modelId: "openai/gpt-oss-20b",
         };
-        onSelected?.(target);
-        return { target, value: await invoke(target) };
+        return { target, value: await invoke(target, 12_345) };
       },
     );
   });
@@ -47,12 +46,14 @@ describe("generateStructuredOutput", () => {
       systemPrompt: "Keep to the system instructions.",
       prompt: "Create a small plan.",
       maxOutputTokens: 500,
-      attemptNumber: 3,
+      budgetMs: 45_000,
     });
 
     expect(result).toEqual({ ok: true });
     expect(generateText).toHaveBeenCalledWith(
       expect.objectContaining({
+        timeout: 12_345,
+        maxRetries: 0,
         system: "Keep to the system instructions.",
         prompt: "Create a small plan.",
         providerOptions: {

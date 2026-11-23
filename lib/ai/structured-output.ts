@@ -2,17 +2,20 @@ import "server-only";
 
 import { generateText, Output } from "ai";
 import type { z } from "zod";
-import { executeProviderAttempt } from "./provider-attempt";
+import {
+  executeProviderChain,
+  type ProviderAttemptRecord,
+} from "./provider-attempt";
 import { getLanguageModel } from "./model";
-import type { ProviderModel } from "./model-config";
 
 export interface StructuredGenerationRequest {
   schema: z.ZodType;
   systemPrompt: string;
   prompt: string;
   maxOutputTokens: number;
-  attemptNumber: number;
-  onProviderSelected?: (target: ProviderModel) => void;
+  /** Time the provider chain may spend in this invocation. */
+  budgetMs: number;
+  onProviderAttempt?: (record: ProviderAttemptRecord) => void;
 }
 
 export async function generateStructuredOutput({
@@ -20,12 +23,11 @@ export async function generateStructuredOutput({
   systemPrompt,
   prompt,
   maxOutputTokens,
-  attemptNumber,
-  onProviderSelected,
+  budgetMs,
+  onProviderAttempt,
 }: StructuredGenerationRequest): Promise<unknown> {
-  const { value } = await executeProviderAttempt(
-    attemptNumber,
-    async (target) => {
+  const { value } = await executeProviderChain(
+    async (target, timeoutMs) => {
       const { output } = await generateText({
         model: getLanguageModel(target),
         system: systemPrompt,
@@ -33,7 +35,7 @@ export async function generateStructuredOutput({
         output: Output.object({ schema }),
         maxOutputTokens,
         maxRetries: 0,
-        timeout: 20_000,
+        timeout: timeoutMs,
         temperature: 0.2,
         ...(target.provider === "groq"
           ? {
@@ -50,7 +52,7 @@ export async function generateStructuredOutput({
       });
       return output;
     },
-    onProviderSelected,
+    { budgetMs, onAttempt: onProviderAttempt },
   );
 
   return value;

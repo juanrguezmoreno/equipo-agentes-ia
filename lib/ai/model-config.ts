@@ -71,18 +71,6 @@ export function getProviderModelChain(
   );
 }
 
-export function getProviderModelForAttempt(
-  attemptNumber: number,
-  env: ModelEnvironment = process.env,
-): ProviderModel {
-  if (!Number.isInteger(attemptNumber) || attemptNumber < 1) {
-    throw new Error("attemptNumber must be a positive integer");
-  }
-
-  const chain = getProviderModelChain(env);
-  return chain[Math.min(attemptNumber - 1, chain.length - 1)];
-}
-
 function isConfiguredApiKey(value: string | undefined): boolean {
   const key = value?.trim();
   return Boolean(key && !/^your[-_ ]/i.test(key));

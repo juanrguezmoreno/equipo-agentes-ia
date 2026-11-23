@@ -7,7 +7,6 @@ import {
   getGeminiModelId,
   getGroqModelId,
   getProviderModelChain,
-  getProviderModelForAttempt,
 } from "./model-config";
 
 describe("provider model configuration", () => {
@@ -29,7 +28,7 @@ describe("provider model configuration", () => {
     );
   });
 
-  it("orders Google models before Groq and repeats Groq for the last retry", () => {
+  it("orders Google models before Groq", () => {
     const env = {
       AI_PROVIDER: "google",
       GOOGLE_GENERATIVE_AI_API_KEY: "configured-google-key",
@@ -42,12 +41,6 @@ describe("provider model configuration", () => {
     expect(getProviderModelChain(env)).toEqual([
       { provider: "google", modelId: "gemini-main" },
       { provider: "google", modelId: "gemini-secondary" },
-      { provider: "groq", modelId: "openai/gpt-oss-20b" },
-    ]);
-    expect([1, 2, 3, 4].map((attempt) => getProviderModelForAttempt(attempt, env))).toEqual([
-      { provider: "google", modelId: "gemini-main" },
-      { provider: "google", modelId: "gemini-secondary" },
-      { provider: "groq", modelId: "openai/gpt-oss-20b" },
       { provider: "groq", modelId: "openai/gpt-oss-20b" },
     ]);
   });
@@ -81,11 +74,11 @@ describe("provider model configuration", () => {
 
   it("does not mistake a legacy Gemini model for the Groq fallback", () => {
     expect(
-      getProviderModelForAttempt(3, {
+      getProviderModelChain({
         AI_PROVIDER: "google",
         AI_MODEL: "gemini-4-hydrogen",
         GROQ_API_KEY: "configured-groq-key",
-      }),
+      })[2],
     ).toEqual({
       provider: "groq",
       modelId: DEFAULT_GROQ_MODEL,

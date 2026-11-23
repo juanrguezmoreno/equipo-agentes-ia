@@ -12,7 +12,7 @@ import {
   type TestReport,
   type TestingReview,
 } from "./schemas";
-import type { ProviderModel } from "@/lib/ai/model-config";
+import type { ProviderAttemptRecord } from "@/lib/ai/provider-attempt";
 import {
   DEVELOP_SYSTEM_PROMPT,
   ORCHESTRATOR_SYSTEM_PROMPT,
@@ -29,9 +29,11 @@ export type StructuredGenerator = (
 ) => Promise<unknown>;
 
 export interface AgentGenerationOptions {
-  attemptNumber: number;
-  onProviderSelected?: (target: ProviderModel) => void;
+  budgetMs: number;
+  onProviderAttempt?: (record: ProviderAttemptRecord) => void;
 }
+
+const DEFAULT_GENERATION_OPTIONS: AgentGenerationOptions = { budgetMs: 45_000 };
 
 const MAX_PLAN_OUTPUT_TOKENS = 1800;
 const MAX_DEVELOP_OUTPUT_TOKENS = 5000;
@@ -40,7 +42,7 @@ const MAX_REVIEW_OUTPUT_TOKENS = 1800;
 export async function runOrchestrator(
   userRequest: string,
   generate: StructuredGenerator = generateStructuredOutput,
-  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
+  generationOptions: AgentGenerationOptions = DEFAULT_GENERATION_OPTIONS,
 ): Promise<Plan> {
   const result = await generate({
     schema: PlanGenerationSchema,
@@ -84,7 +86,7 @@ export interface DevelopAgentInput {
 export async function runDevelop(
   input: DevelopAgentInput,
   generate: StructuredGenerator = generateStructuredOutput,
-  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
+  generationOptions: AgentGenerationOptions = DEFAULT_GENERATION_OPTIONS,
 ): Promise<DevelopmentOutput> {
   const result = await generate({
     schema: DevelopmentGenerationSchema,
@@ -115,7 +117,7 @@ export interface TestingAgentInput {
 export async function runTestingReview(
   input: TestingAgentInput,
   generate: StructuredGenerator = generateStructuredOutput,
-  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
+  generationOptions: AgentGenerationOptions = DEFAULT_GENERATION_OPTIONS,
 ): Promise<TestingReview> {
   const result = await generate({
     schema: TestingReviewGenerationSchema,
@@ -131,7 +133,7 @@ export async function runTestingReview(
 export async function runTesting(
   input: Omit<TestingAgentInput, "deterministicChecks">,
   generate: StructuredGenerator = generateStructuredOutput,
-  generationOptions: AgentGenerationOptions = { attemptNumber: 1 },
+  generationOptions: AgentGenerationOptions = DEFAULT_GENERATION_OPTIONS,
 ): Promise<TestReport> {
   const files = Object.entries(input.projectFiles).map(([path, content]) => ({
     path,
