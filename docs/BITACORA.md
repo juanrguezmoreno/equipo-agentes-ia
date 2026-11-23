@@ -364,3 +364,115 @@ permiso solo para superar el límite o si existe posibilidad de coste.
   logs y la configuración.
 - La Fase 3 continúa abierta: no hay ciclo real exitoso, capturas de éxito,
   commit/push de la fase ni despliegue público.
+
+## Cambio de herramienta: de GitHub Copilot a Claude Code (2026-11-23)
+
+### Nota de transparencia
+
+Las fases 0 a 3 (hasta el commit `0de7ae4`) se desarrollaron por error con
+GitHub Copilot en modo agente, no con Claude Code como estaba previsto. Los
+commits `c26d8bd` a `13db2ed` llevan el trailer `Co-authored-by: Copilot`, que
+lo confirma. A partir de esta entrada el trabajo continúa con Claude Code.
+
+Consecuencias que se dejan constancia:
+
+- Las entradas anteriores de esta bitácora las redactó Copilot. Claude Code no
+  ha vuelto a verificar cada afirmación; sí ha comprobado que el árbol está
+  limpio, que `0de7ae4` está en `origin/main` y que tests, TypeScript y lint
+  pasan.
+- Algunas fechas anteriores no cuadran: hay entradas fechadas el 24 y el
+  26-11-2026, pero todos los commits y todas las runs de la base de datos son
+  del 23-11-2026. Las fechas reales son las de Git y Supabase.
+- Las referencias a que Context7 o los MCP no estaban disponibles describen el
+  entorno de Copilot. En Claude Code sí están disponibles y se usan.
+
+### Petición
+
+Revisar la cadena de fallback para que un 503 de Gemini pase enseguida al
+siguiente proveedor sin consumir reintentos. Ajustar el timeout por proveedor
+sin superar el límite de duración de Vercel Hobby. Aplicar la regla de hasta
+10 ejecuciones reales al día. Cuando un ciclo completo funcione, hacer capturas
+con Playwright, commit y push.
+
+### Diagnóstico
+
+- Antes, cada invocación probaba un único proveedor: el intento persistido N
+  usaba el proveedor N de la cadena. Un 503 de Gemini consumía un intento
+  persistido y esperaba un backoff antes de probar el siguiente proveedor.
+- El timeout era de 20 s para todos los proveedores. Era ajustado para salidas
+  grandes de Develop (hasta 5000 tokens) y explica el `provider_timeout` de
+  Groq.
+- Documentación consultada: la página de duración de Vercel Functions indica
+  que Hobby con Fluid compute tiene 300 s por defecto y 300 s como máximo. El
+  límite efectivo de este proyecto es el lease de la RPC, que admite como
+  máximo 60 s. La documentación del AI SDK (`timeout` de `generateText`) se
+  consultó vía Context7.
+
+### Implementado
+
+- `executeProviderChain` recorre la cadena completa en una sola invocación. Un
+  error transitorio pasa al siguiente proveedor sin espera, un error permanente
+  corta la cadena, y solo si fallan todos se persiste un reintento con backoff.
+  Cada intento persistido vuelve a empezar por el principio de la cadena.
+- Timeouts: 25 s para Gemini y 30 s para Groq, siempre acotados al presupuesto
+  restante de 45 s por invocación. No se inicia un proveedor si quedan menos de
+  8 s. La ruta declara `maxDuration = 60` y pide un lease de 60 s. No hace
+  falta ninguna migración.
+- Cada proveedor probado genera un evento `provider_attempt` con su posición
+  en la cadena y su duración. El log de error del servidor resume la cadena.
+- Tests: 40 pasan, incluidos los casos de 503 → siguiente proveedor, error
+  permanente, cadena agotada, presupuesto acotado y presupuesto insuficiente.
+  TypeScript y lint pasan.
+
+### Regla de ejecuciones reales
+
+`CLAUDE.md` ya contenía la regla de hasta 10 ejecuciones reales al día sin
+pedir permiso, y no había en él ninguna regla más restrictiva. Queda sin efecto
+la restricción adicional de la entrada anterior («límite diario conservador de
+llamadas a modelo»).
+
+Una consulta read-only a Supabase muestra que hoy (23-11-2026) ya existen 11
+runs: 10 en estado `failed` y 1 en `retry_wait`, todas de sesiones anteriores.
+El cupo diario estaba por tanto agotado. Se preguntó al usuario y decidió que
+esas 11 runs no cuentan: el cupo de 10 se cuenta desde este punto.
+
+### Ejecuciones reales (2 de 10 hoy)
+
+Ambas se lanzaron con Playwright contra `next dev` local, en una sesión anónima
+nueva. Los logs se revisaron mediante eventos y runs en Supabase (consultas
+read-only) antes de pasar a la siguiente.
+
+1. **README** (16:27 UTC): Completada en unos 14 s. En los tres pasos, Gemini
+   3.5 y 3.1 Flash-Lite devolvieron HTTP 503 en 0,4–4,7 s y la misma invocación
+   pasó a Groq `openai/gpt-oss-20b`, que respondió en menos de 1 s. Se detectó
+   que los eventos `provider_attempt` de un mismo paso, insertados en un solo
+   `INSERT`, compartían `created_at`. Se cambió a una inserción por evento para
+   conservar el orden de la cadena.
+2. **Página de contacto** (16:29 UTC): Completada en unos 20 s, con una
+   iteración real Develop↔Testing. Plan y primera entrega llegaron por Groq
+   tras dos 503 de Gemini. Testing bloqueó la iteración 1 por 4 checks
+   deterministas fallidos, sin llamar al LLM. Develop corrigió en la iteración
+   2, esta vez con Gemini 3.5 Flash-Lite disponible (5,4 s), y Testing aprobó
+   con checks y revisión LLM (4,8 s). Los eventos aparecieron en orden.
+
+Capturas en `docs/screenshots/`: `fase3-ciclo-completo-oscuro.png`,
+`fase3-ciclo-completo-claro.png`, `fase3-ciclo-completo-movil.png` (390 px, sin
+scroll horizontal) y `fase3-iteracion-develop-testing.png`. La consola del
+navegador no muestra errores ni avisos.
+
+### Limitaciones y pendientes
+
+- Validado solo en local (`next dev`). No hay despliegue en Vercel; el
+  `maxDuration` y el presupuesto de tiempo no se han probado en producción.
+- El log de desarrollo de Next (`.next/dev/logs`) serializa como `{}` los
+  objetos de `console.error`; el diagnóstico se hizo con eventos de BD.
+- Con el informe de Testing desplegado, la columna «Completada» del tablero es
+  estrecha y recorta etiquetas como «HALLAZGOS» y «APROBADO».
+- Gemini devolvió 503 en casi todas las llamadas: hoy el flujo depende en la
+  práctica de Groq Free.
+
+### Estado
+
+Ciclo completo plan → develop → testing → completada verificado dos veces con
+modelos gratuitos. Tests (40), TypeScript, lint y build pasan. Queda pendiente
+la aprobación del usuario para cerrar la Fase 3.

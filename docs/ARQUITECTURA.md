@@ -48,7 +48,8 @@ flowchart LR
 
 Las RPC `create_agent_run`, `claim_next_agent_step`, `complete_agent_step` y
 `fail_agent_step` mantienen las transiciones atómicas en Postgres. El claim usa
-un idempotency key por paso e iteración, un lease de 45 segundos y un lock por
+un idempotency key por paso e iteración, un lease de 60 segundos (máximo que
+admite la RPC; la ruta declara `maxDuration = 60`) y un lock por
 run antes de llamar al modelo. La finalización guarda plan/artefactos/informe,
 actualiza estados y registra eventos en la misma transacción; las llamadas
 repetidas no duplican artefactos ni completan dos veces el mismo intento.
@@ -127,13 +128,23 @@ Esta política se propone para la implementación.
 
 Límite inicial: tres iteraciones Develop↔Testing por tarea, incluyendo la
 primera entrega de Develop. El valor se guarda en el run y no se cambia a mitad
-del flujo. Cada paso de proveedor tiene un máximo de cuatro intentos persistidos.
-Con `AI_PROVIDER=google`, el orden es Gemini principal, Gemini alternativo,
-Groq opcional y repetición de Groq; con `AI_PROVIDER=groq`, Groq precede a los
-dos modelos Gemini y el cuarto intento repite el último. Los reintentos se
-limitan a timeouts y HTTP 408, 425, 429, 500, 502, 503 o 504;
-errores permanentes, como HTTP 400, terminan el paso sin reintento. El SDK no
-activa reintentos internos.
+del flujo. Cada invocación recorre la cadena de proveedores completa: con
+`AI_PROVIDER=google`, Gemini principal → Gemini alternativo → Groq opcional;
+con `AI_PROVIDER=groq`, Groq precede a los dos Gemini. Un error transitorio
+(timeout o HTTP 408, 425, 429, 500, 502, 503 o 504) pasa **inmediatamente** al
+siguiente proveedor dentro de la misma invocación, sin esperar ni consumir un
+reintento persistido. Un error permanente, como HTTP 400, termina el paso.
+Solo si todos los proveedores fallan de forma transitoria se persiste un
+reintento con backoff exponencial y jitter; el máximo sigue siendo cuatro
+intentos persistidos por paso, y cada uno vuelve a empezar por el principio de
+la cadena. El SDK no activa reintentos internos.
+
+Presupuesto de tiempo por invocación: Vercel Hobby con Fluid compute permite
+hasta 300 s, pero el límite efectivo es el lease de 60 s. Las llamadas a modelo
+disponen de 45 s contados desde el inicio de la petición; el resto cubre auth,
+claim, carga de artefactos y persistencia. Cada llamada usa
+`min(timeout del proveedor, presupuesto restante)` con 25 s para Gemini y 30 s
+para Groq, y no se inicia un proveedor si quedan menos de 8 s.
 
 ## Contratos de agentes y verificación
 
@@ -178,11 +189,11 @@ cuenta Groq Free sin método de pago; el usuario confirmó esa condición para s
 cuenta y que la cuota agotada devuelve 429. Los límites exactos dependen de la
 organización y se deben verificar en su consola. Nunca se deben enviar datos
 sensibles. El prompt de sistema se envía en el campo `system`; Groq recibe
-`structuredOutputs` y `strictJsonSchema` explícitamente activados. Las llamadas
-tienen timeout de 20 segundos y desactivan los reintentos internos del SDK.
-Cada intento registra proveedor/modelo en
-`agent_events` con resultado y código HTTP, y la UI muestra el último intento
-por agente. La salida de cada entrega Develop limita el contenido combinado a
+`structuredOutputs` y `strictJsonSchema` explícitamente activados. Los timeouts
+por proveedor se describen arriba y los reintentos internos del SDK están
+desactivados. Cada proveedor probado registra un evento `provider_attempt` en
+`agent_events` con modelo, posición en la cadena, resultado, código HTTP y
+duración, y la UI muestra el último intento por agente. La salida de cada entrega Develop limita el contenido combinado a
 20 000 caracteres; el contexto virtual acumulado se limita a 20 archivos y
 48 000 caracteres para evitar prompts sin límite.
 

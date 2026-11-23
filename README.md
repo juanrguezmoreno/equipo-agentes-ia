@@ -50,11 +50,13 @@ de pago. Consulta [Structured Outputs](https://console.groq.com/docs/structured-
 [rate limits](https://console.groq.com/docs/rate-limits).
 
 `AI_PROVIDER=google` (predeterminado) ordena Gemini principal → Gemini
-alternativo → Groq opcional; el cuarto intento repite Groq. Con
-`AI_PROVIDER=groq`, Groq va primero, seguido de ambos Gemini, y el cuarto
-intento repite el último modelo. Solo errores transitorios (timeouts y HTTP
-408/425/429/500/502/503/504) reciben backoff exponencial con jitter; el SDK no
-reintenta por su cuenta. Los eventos registran proveedor, modelo y resultado. Cambia
+alternativo → Groq opcional; con `AI_PROVIDER=groq`, Groq va primero. Ante un
+error transitorio (timeout o HTTP 408/425/429/500/502/503/504) la misma
+invocación pasa enseguida al siguiente proveedor. Solo si fallan todos se
+programa un reintento persistido con backoff exponencial y jitter (máximo
+cuatro por paso). Timeouts: 25 s Gemini, 30 s Groq, acotados a un presupuesto
+de 45 s por invocación (`maxDuration` 60 s); el SDK no reintenta por su cuenta.
+Los eventos registran proveedor, modelo, resultado y duración. Cambia
 `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL` y `GROQ_MODEL` sin modificar código;
 `AI_MODEL` solo se acepta como fallback heredado de `GROQ_MODEL` cuando
 `AI_PROVIDER=groq`, para que un nombre Gemini antiguo no contamine el fallback.
