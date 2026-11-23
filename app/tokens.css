@@ -1,0 +1,124 @@
+/*
+ * Design tokens: the single source for colour, type, spacing, radii,
+ * shadows and motion. Components only reference these variables.
+ *
+ * Direction "Sala de control": slate surfaces, signage type, and one accent
+ * per agent. Colour says WHO (agent); the lamp shape says STATE.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces and ink */
+  --color-bg: #edf0f2;
+  --color-surface: #ffffff;
+  --color-surface-raised: #f4f6f7;
+  --color-sunken: #f6f7f8;
+  --color-ink: #1d252d;
+  --color-ink-2: #46515c;
+  --color-ink-3: #5f6a75;
+  --color-rule: #d6dce1;
+  --color-rule-strong: #b4bec7;
+  /* Control borders need 3:1 against their surface (WCAG 1.4.11) */
+  --color-control: #7d8994;
+  --color-inverse: #1d252d;
+  --color-on-inverse: #ffffff;
+  --color-focus: #1d252d;
+
+  /* Agent identity: fill (lamps, rails), ink (text-safe), tint (backgrounds) */
+  --agent-orchestrator: #bd8019;
+  --agent-orchestrator-ink: #8a5806;
+  --agent-orchestrator-tint: #f7eddb;
+  --agent-develop: #2f6bd8;
+  --agent-develop-ink: #2456b2;
+  --agent-develop-tint: #e4ecfb;
+  --agent-testing: #17977c;
+  --agent-testing-ink: #0b6b58;
+  --agent-testing-tint: #ddf1eb;
+  --agent-system: #5f6a75;
+
+  /* Feedback */
+  --color-danger: #b23a26;
+  --color-danger-tint: #f8e3de;
+
+  /* Typography */
+  --font-display: var(--font-barlow-semi-condensed), "Arial Narrow", sans-serif;
+  --font-body: var(--font-barlow), system-ui, sans-serif;
+  --font-code: var(--font-jetbrains-mono), ui-monospace, monospace;
+  --text-xs: 0.8125rem; /* 13px */
+  --text-sm: 0.875rem; /* 14px */
+  --text-md: 1rem; /* 16px */
+  --text-lg: 1.25rem; /* 20px */
+  --text-xl: 1.625rem; /* 26px */
+  --text-2xl: 2.125rem; /* 34px */
+  --leading-tight: 1.15;
+  --leading-body: 1.5;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Spacing (4px base) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --gutter: clamp(1rem, 3vw, 2rem);
+  --content-max: 88rem;
+
+  /* Radii: small for controls, medium for panels, round only for lamps */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-round: 999px;
+
+  /* Shadows: borders do most of the work; one shadow for floating focus */
+  --shadow-raise: 0 1px 0 rgb(29 37 45 / 6%);
+  --shadow-lift: 0 6px 18px -10px rgb(29 37 45 / 35%);
+
+  /* Motion */
+  --duration-instant: 100ms;
+  --duration-fast: 160ms;
+  --duration-base: 220ms;
+  --duration-move: 280ms;
+  --duration-pulse: 1400ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-standard: ease;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-bg: #20262e;
+  --color-surface: #29313b;
+  --color-surface-raised: #303945;
+  --color-sunken: #1c2128;
+  --color-ink: #e8ecef;
+  --color-ink-2: #bcc5cd;
+  --color-ink-3: #9aa5af;
+  --color-rule: #3a4450;
+  --color-rule-strong: #55616e;
+  --color-control: #7a8794;
+  --color-inverse: #e8ecef;
+  --color-on-inverse: #1d252d;
+  --color-focus: #e8ecef;
+
+  --agent-orchestrator: #e0a441;
+  --agent-orchestrator-ink: #efbd6a;
+  --agent-orchestrator-tint: #3b3427;
+  --agent-develop: #6e9bf0;
+  --agent-develop-ink: #9dbbf6;
+  --agent-develop-tint: #283650;
+  --agent-testing: #3cc2a2;
+  --agent-testing-ink: #6fd8be;
+  --agent-testing-tint: #223f3b;
+  --agent-system: #9aa5af;
+
+  --color-danger: #f28a74;
+  --color-danger-tint: #46292a;
+
+  --shadow-raise: 0 1px 0 rgb(0 0 0 / 20%);
+  --shadow-lift: 0 8px 22px -12px rgb(0 0 0 / 60%);
+}

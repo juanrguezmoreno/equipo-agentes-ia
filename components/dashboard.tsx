@@ -9,10 +9,9 @@ import {
   type FormEvent,
 } from "react";
 import Link from "next/link";
-import AgentCards from "@/components/agent-cards";
 import CodeViewer from "@/components/code-viewer";
 import EventTimeline from "@/components/event-timeline";
-import TaskBoard from "@/components/task-board";
+import RunTrack from "@/components/run-track";
 import ThemeToggle from "@/components/theme-toggle";
 import { CreateRunSchema } from "@/lib/agents/schemas";
 import { createClient } from "@/lib/supabase/client";
@@ -26,10 +25,54 @@ type AgentEvent = Tables<"agent_events">;
 type RealtimeState = "idle" | "connecting" | "connected" | "offline";
 
 const examples = [
-  "Crea un README.md con el título «Notas de lanzamiento» y las secciones Resumen, Cambios y Próximos pasos.",
-  "Añade una página de contacto con un formulario accesible y datos de contacto de ejemplo.",
-  "Crea una hoja de estilos CSS con una paleta accesible para una interfaz de tareas.",
+  {
+    label: "README de lanzamiento",
+    request:
+      "Crea un README.md con el título «Notas de lanzamiento» y las secciones Resumen, Cambios y Próximos pasos.",
+  },
+  {
+    label: "Página de contacto",
+    request:
+      "Añade una página de contacto con un formulario accesible y datos de contacto de ejemplo.",
+  },
+  {
+    label: "Paleta CSS accesible",
+    request:
+      "Crea una hoja de estilos CSS con una paleta accesible para una interfaz de tareas.",
+  },
 ];
+
+const timeFormat = new Intl.DateTimeFormat("es", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+function formatDuration(run: Run): string | null {
+  const elapsed = Date.parse(run.updated_at) - Date.parse(run.created_at);
+  if (!Number.isFinite(elapsed) || elapsed < 0) {
+    return null;
+  }
+  const seconds = Math.round(elapsed / 1000);
+  return seconds < 60
+    ? `${seconds} s`
+    : `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+}
+
+function runLampState(run: Run): "done" | "error" | "waiting" | "active" {
+  switch (run.status) {
+    case "completed":
+      return "done";
+    case "failed":
+    case "cancelled":
+      return "error";
+    case "retry_wait":
+      return "waiting";
+    case "planning":
+    case "running":
+      return "active";
+  }
+}
 
 const RunResponseSchema = z.object({ runId: z.uuid() });
 const MAX_BROWSER_STEPS = 100;
@@ -40,7 +83,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatRunLabel(run: Run): string {
   const prompt = run.request.replace(/\s+/g, " ").trim();
-  const shortPrompt = prompt.length > 48 ? `${prompt.slice(0, 48)}…` : prompt;
+  const shortPrompt = prompt.length > 44 ? `${prompt.slice(0, 44)}…` : prompt;
   const date = new Date(run.created_at);
   const time = Number.isNaN(date.getTime())
     ? ""
@@ -50,7 +93,7 @@ function formatRunLabel(run: Run): string {
         hour: "2-digit",
         minute: "2-digit",
       }).format(date);
-  return time ? `${shortPrompt} · ${time}` : shortPrompt;
+  return time ? `${time}, ${shortPrompt}` : shortPrompt;
 }
 
 function getDelayUntil(value: unknown): number {
@@ -527,30 +570,27 @@ export default function Dashboard() {
 
   if (authState !== "ready") {
     return (
-      <main className="auth-state">
-        <section className="auth-card" aria-labelledby="auth-heading">
-          <div className="brand-mark" aria-hidden="true">
-            <span>✦</span>
-          </div>
-          <h1 id="auth-heading">
+      <main className="boot">
+        <section className="boot-panel" aria-labelledby="boot-heading">
+          <p className="wordmark-name">Estudio</p>
+          <h1 id="boot-heading" className="boot-title">
             {authState === "loading"
-              ? "Preparando el espacio"
+              ? "Abriendo una sesión privada"
               : "No se pudo conectar"}
           </h1>
-          <p>
+          <p className="boot-copy">
             {authState === "loading"
-              ? "Estamos iniciando una sesión privada para guardar tus ejecuciones."
-              : runError ||
-                "Comprueba la conexión y vuelve a intentarlo."}
+              ? "Tus ejecuciones se guardan en esta sesión anónima y solo tú puedes verlas."
+              : runError || "Comprueba la conexión y vuelve a intentarlo."}
           </p>
           {authState === "loading" ? (
-            <span className="busy-indicator" role="status">
-              <span className="spinner" aria-hidden="true" />
+            <p className="boot-status" role="status">
+              <span className="lamp" data-state="active" aria-hidden="true" />
               Conectando con Supabase
-            </span>
+            </p>
           ) : (
             <button
-              className="primary-button"
+              className="button button-primary"
               type="button"
               onClick={() => {
                 setRunError(null);
@@ -566,232 +606,249 @@ export default function Dashboard() {
     );
   }
 
+  const completedTasks = selectedTasks.filter(
+    (task) => task.status === "completed",
+  ).length;
+  const duration =
+    selectedRun && isTerminalRun(selectedRun) ? formatDuration(selectedRun) : null;
+  const startedAt = selectedRun ? new Date(selectedRun.created_at) : null;
+
   return (
-    <main className="app-shell">
+    <div className="app">
+      <a className="skip-link" href="#contenido">
+        Saltar al contenido
+      </a>
       <header className="topbar">
-        <Link className="brand" href="/" aria-label="Estudio de agentes, inicio">
-          <span className="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none" width="20" height="20">
-              <path
-                d="M10 2.5 12.1 7.9 17.5 10l-5.4 2.1L10 17.5l-2.1-5.4L2.5 10l5.4-2.1L10 2.5Z"
-                fill="currentColor"
-              />
+        <div className="topbar-inner">
+          <Link className="wordmark" href="/" aria-label="Estudio, inicio">
+            <svg
+              className="wordmark-mark"
+              viewBox="0 0 36 12"
+              width="36"
+              height="12"
+              aria-hidden="true"
+            >
+              <path d="M3 6h30" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="4" cy="6" r="3" fill="var(--agent-orchestrator)" />
+              <circle cx="14" cy="6" r="3" fill="var(--agent-develop)" />
+              <circle cx="24" cy="6" r="3" fill="var(--agent-testing)" />
+              <circle cx="33" cy="6" r="2" fill="currentColor" />
             </svg>
-          </span>
-          <span className="brand-name">
-            Estudio
-            <small>Agentes colaborativos</small>
-          </span>
-        </Link>
-        <div className="topbar-actions">
-          <span className="session-pill">
-            <span className="session-dot" aria-hidden="true" />
-            Sesión privada
-          </span>
-          <ThemeToggle />
+            <span className="wordmark-name">Estudio</span>
+            <span className="wordmark-tag">Equipo de agentes</span>
+          </Link>
+          <div className="topbar-actions">
+            <label className="run-picker">
+              <span className="sr-only">Ejecución que se muestra</span>
+              <select
+                className="select"
+                value={selectedRunId ?? ""}
+                disabled={runs.length === 0 || isCreating}
+                onChange={(event) =>
+                  setSelectedRunId(event.currentTarget.value || null)
+                }
+              >
+                {runs.length === 0 ? (
+                  <option value="">Sin ejecuciones todavía</option>
+                ) : (
+                  runs.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {formatRunLabel(item)}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 
-      <section className="hero" aria-labelledby="page-title">
-        <div>
-          <p className="eyebrow">
-            <span className="eyebrow-mark" aria-hidden="true" />
-            Equipo de desarrollo con IA
-          </p>
-          <h1 id="page-title">De la petición al código, en equipo.</h1>
-          <p className="hero-copy">
-            El Orquestador crea un plan, Develop escribe los archivos y Testing
-            comprueba cada tarea. Sigue el proceso en directo.
-          </p>
-        </div>
-        <div className="hero-side">
-          <label className="run-picker">
-            <span className="run-picker-label">Historial de ejecuciones</span>
-            <select
-              aria-label="Historial de ejecuciones"
-              value={selectedRunId ?? ""}
-              disabled={runs.length === 0 || isCreating}
-              onChange={(event) =>
-                setSelectedRunId(event.currentTarget.value || null)
-              }
-            >
-              {runs.length === 0 ? (
-                <option value="">Sin ejecuciones todavía</option>
-              ) : (
-                runs.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {formatRunLabel(item)}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
-          {selectedRun && (
-            <span className="provider-pill" data-state={selectedRun.status}>
-              {runStatusLabel(selectedRun)}
-            </span>
-          )}
-        </div>
-      </section>
-
-      <section className="request-panel" aria-labelledby="request-heading">
-        <div className="request-panel-top">
-          <h2 id="request-heading">¿Qué quieres construir?</h2>
-          <p>Cada paso se guarda y puede reanudarse sin perder el progreso.</p>
-        </div>
-        <form className="request-form" onSubmit={submitPrompt}>
-          <div className="request-input-wrap">
-            <label className="sr-only" htmlFor="request-input">
-              Describe la tarea para el equipo
-            </label>
-            <textarea
-              className="request-input"
-              id="request-input"
-              value={prompt}
-              onChange={(event) => setPrompt(event.currentTarget.value)}
-              placeholder="Ej.: añade una página de contacto accesible a esta web…"
-              maxLength={4000}
-              disabled={isCreating || isAnyRunProcessing}
-              required
-            />
-            <span className="char-count" aria-live="polite">
-              {prompt.length}/4000
-            </span>
-          </div>
-          <button
-            className="primary-button"
-            type="submit"
-            disabled={
-              !prompt.trim() ||
-              isCreating ||
-              isAnyRunProcessing
-            }
-          >
-            {isCreating ? (
-              <>
-                <span className="spinner" aria-hidden="true" />
-                Creando…
-              </>
-            ) : isProcessingSelectedRun ? (
-              <>
-                <span className="spinner" aria-hidden="true" />
-                Trabajando…
-              </>
-            ) : (
-              <>
-                <span aria-hidden="true">✦</span>
-                Iniciar equipo
-              </>
-            )}
-          </button>
-        </form>
-        <div className="example-row" aria-label="Peticiones de ejemplo">
-          <span className="example-caption">O prueba con un clic</span>
-          {examples.map((example, index) => (
-            <button
-              className="example-button"
-              key={example}
-              type="button"
-              disabled={isCreating || Boolean(processingRunId)}
-              onClick={() => selectExample(example)}
-            >
-              {["README", "Página de contacto", "Paleta CSS"][index]}
-            </button>
-          ))}
-        </div>
-        {(runError || selectedRun?.error_message) && (
-          <div className="error-banner" role="alert">
-            <span aria-hidden="true">!</span>
-            <span>{runError || selectedRun?.error_message}</span>
-          </div>
-        )}
-        {processNotice && (
-          <div className="notice-banner" role="status">
-            <span aria-hidden="true">↻</span>
-            <span>{processNotice}</span>
-          </div>
-        )}
-        {processingRunId && (
-          <div className="inline-row" style={{ justifyContent: "space-between", marginTop: 12 }}>
-            <span className="busy-indicator" role="status" aria-live="polite">
-              <span className="spinner" aria-hidden="true" />
-              {isProcessingSelectedRun
-                ? "El equipo está trabajando; los eventos se actualizan en vivo."
-                : "Hay otra ejecución en marcha."}
-            </span>
-          </div>
-        )}
-        {!processingRunId && selectedRun && !isTerminalRun(selectedRun) && (
-          <div className="inline-row" style={{ justifyContent: "space-between", marginTop: 12 }}>
-            <span className="busy-indicator">
-              La ejecución se puede reanudar en cualquier momento.
-            </span>
-            <button
-              className="resume-button"
-              type="button"
-              onClick={() => {
-                if (supabase) {
-                  void processRun(selectedRun.id, supabase);
-                }
-              }}
-            >
-              Reanudar ejecución
-            </button>
-          </div>
-        )}
-        {dataError && (
-          <div className="error-banner" role="status">
-            <span aria-hidden="true">!</span>
-            <span>{dataError}</span>
-          </div>
-        )}
-      </section>
-
-      <AgentCards run={selectedRun} tasks={selectedTasks} events={selectedEvents} />
-
-      <div className="workspace-grid">
-        <TaskBoard tasks={selectedTasks} events={selectedEvents} />
-        <EventTimeline
-          events={selectedEvents}
-          connected={realtimeState === "connected"}
-          state={realtimeState}
-        />
-      </div>
-
-      <div className="detail-grid">
-        <CodeViewer artifacts={selectedArtifacts} tasks={selectedTasks} />
-        <section className="surface-panel" aria-labelledby="project-note-heading">
-          <div className="panel-heading">
-            <div>
-              <h2 id="project-note-heading">Cómo funciona</h2>
-              <p className="section-subtitle">
-                Un flujo corto, persistido y verificable
+      <main className="page" id="contenido" tabIndex={-1}>
+        <section className="command" aria-labelledby="command-heading">
+          <h1 id="command-heading" className="command-title">
+            ¿Qué tiene que construir el equipo?
+          </h1>
+          <form className="command-form" onSubmit={submitPrompt}>
+            <div className="field">
+              <label className="sr-only" htmlFor="request-input">
+                Describe la tarea para el equipo
+              </label>
+              <textarea
+                className="field-input"
+                id="request-input"
+                value={prompt}
+                onChange={(event) => setPrompt(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    (event.metaKey || event.ctrlKey)
+                  ) {
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                placeholder="Por ejemplo: añade una página de contacto accesible a esta web"
+                maxLength={4000}
+                rows={2}
+                aria-describedby="request-hint"
+                disabled={isCreating || isAnyRunProcessing}
+                required
+              />
+              <p className="field-hint" id="request-hint">
+                <span>Ctrl + Enter para enviar</span>
+                <span aria-live="polite">{prompt.length} / 4000</span>
               </p>
             </div>
+            <button
+              className="button button-primary command-submit"
+              type="submit"
+              disabled={!prompt.trim() || isCreating || isAnyRunProcessing}
+            >
+              {isCreating
+                ? "Creando…"
+                : isProcessingSelectedRun
+                  ? "Trabajando…"
+                  : "Iniciar equipo"}
+            </button>
+          </form>
+          <div className="examples">
+            <span className="examples-label" id="examples-label">
+              O prueba un ejemplo:
+            </span>
+            <div className="examples-list" role="group" aria-labelledby="examples-label">
+              {examples.map((example) => (
+                <button
+                  className="chip"
+                  key={example.label}
+                  type="button"
+                  title={example.request}
+                  disabled={isCreating || Boolean(processingRunId)}
+                  onClick={() => selectExample(example.request)}
+                >
+                  {example.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <ol className="criteria-list">
-            <li>El Orquestador propone tareas con criterios comprobables.</li>
-            <li>Develop guarda cada archivo como una revisión del proyecto virtual.</li>
-            <li>
-              Testing combina comprobaciones automáticas con una revisión del
-              resultado.
-            </li>
-            <li>
-              Si algo falla, Develop recibe el informe y vuelve a intentarlo
-              (hasta tres iteraciones).
-            </li>
-          </ol>
+          {(runError || selectedRun?.error_message) && (
+            <p className="banner" data-tone="danger" role="alert">
+              {runError || selectedRun?.error_message}
+            </p>
+          )}
+          {processNotice && (
+            <p className="banner" data-tone="neutral" role="status">
+              {processNotice}
+            </p>
+          )}
+          {processingRunId && !isProcessingSelectedRun && (
+            <p className="banner" data-tone="neutral" role="status">
+              Hay otra ejecución en marcha. Selecciónala en el historial para
+              seguirla.
+            </p>
+          )}
+          {dataError && (
+            <p className="banner" data-tone="danger" role="status">
+              {dataError}
+            </p>
+          )}
         </section>
-      </div>
-      <footer className="footer-note">
-        El código generado se conserva como artefacto virtual y no se ejecuta en
-        este servidor.
-      </footer>
-      {snapshotLoading && (
-        <span className="sr-only" role="status">
-          Cargando historial de la ejecución seleccionada.
-        </span>
-      )}
-    </main>
+
+        {snapshotLoading ? (
+          <section className="run-head" aria-busy="true" aria-label="Cargando ejecución">
+            <div className="skeleton skeleton-title" />
+            <div className="skeleton skeleton-meta" />
+          </section>
+        ) : (
+          selectedRun && (
+            <section className="run-head" aria-labelledby="run-heading">
+              <div className="run-head-main">
+                <h2 id="run-heading" className="run-title">
+                  {selectedRun.request}
+                </h2>
+                <dl className="run-meta">
+                  <div>
+                    <dt>Estado</dt>
+                    <dd className="run-status" role="status">
+                      <span
+                        className="lamp"
+                        data-state={runLampState(selectedRun)}
+                        aria-hidden="true"
+                      />
+                      {runStatusLabel(selectedRun)}
+                    </dd>
+                  </div>
+                  {startedAt && !Number.isNaN(startedAt.getTime()) && (
+                    <div>
+                      <dt>Inicio</dt>
+                      <dd>
+                        <time dateTime={selectedRun.created_at}>
+                          {timeFormat.format(startedAt)}
+                        </time>
+                      </dd>
+                    </div>
+                  )}
+                  {duration && (
+                    <div>
+                      <dt>Duración</dt>
+                      <dd>{duration}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>Tareas aprobadas</dt>
+                    <dd>
+                      {selectedTasks.length === 0
+                        ? "Sin plan aún"
+                        : `${completedTasks} de ${selectedTasks.length}`}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+              {!processingRunId && !isTerminalRun(selectedRun) && (
+                <div className="run-resume">
+                  <p>Esta ejecución quedó a medias y se puede retomar.</p>
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => {
+                      if (supabase) {
+                        void processRun(selectedRun.id, supabase);
+                      }
+                    }}
+                  >
+                    Reanudar ejecución
+                  </button>
+                </div>
+              )}
+            </section>
+          )
+        )}
+
+        <RunTrack
+          run={selectedRun}
+          tasks={selectedTasks}
+          events={selectedEvents}
+          live={isProcessingSelectedRun}
+          loading={snapshotLoading}
+        />
+
+        <div className="lower">
+          <EventTimeline
+            events={selectedEvents}
+            state={realtimeState}
+            loading={snapshotLoading}
+          />
+          <CodeViewer
+            artifacts={selectedArtifacts}
+            tasks={selectedTasks}
+            loading={snapshotLoading}
+          />
+        </div>
+
+        <footer className="footnote">
+          El código generado se guarda como artefacto virtual; este servidor no
+          lo ejecuta.
+        </footer>
+      </main>
+    </div>
   );
 }

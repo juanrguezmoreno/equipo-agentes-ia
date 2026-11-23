@@ -285,7 +285,7 @@ async function recordProviderAttempts(
       task_id: context.taskId,
       agent: context.agent,
       event_type: "provider_attempt",
-      output_summary: `${providerName} · ${attempt.target.modelId} · ${statusSummary}`,
+      output_summary: `${providerName} (${attempt.target.modelId}): ${statusSummary}`,
       metadata: {
         provider: attempt.target.provider,
         model: attempt.target.modelId,

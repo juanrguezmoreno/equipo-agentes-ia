@@ -42,7 +42,7 @@ export default function ThemeToggle() {
 
   return (
     <button
-      className="theme-toggle"
+      className="icon-button"
       type="button"
       onClick={toggleTheme}
       aria-label={`Cambiar a modo ${theme === "dark" ? "claro" : "oscuro"}`}

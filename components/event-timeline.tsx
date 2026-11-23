@@ -1,26 +1,24 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { AgentIcon, identities } from "@/components/agent-identity";
 import { getEventLabel } from "@/lib/dashboard/presentation";
 import type { Tables } from "@/types/database";
 
 type AgentEvent = Tables<"agent_events">;
+type RealtimeState = "idle" | "connecting" | "connected" | "offline";
 
-const agentMarks: Record<AgentEvent["agent"], string> = {
-  orchestrator: "O",
-  develop: "D",
-  testing: "T",
-  system: "·",
-};
-
-const agentNames: Record<AgentEvent["agent"], string> = {
-  orchestrator: "Orquestador",
-  develop: "Develop",
-  testing: "Testing",
-  system: "Sistema",
+const realtimeLabels: Record<RealtimeState, string> = {
+  connected: "En directo",
+  connecting: "Conectando",
+  offline: "Reconectando",
+  idle: "Sin ejecución",
 };
 
 function formatTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
-    ? "Hora no disponible"
+    ? "--:--:--"
     : new Intl.DateTimeFormat("es", {
         hour: "2-digit",
         minute: "2-digit",
@@ -28,73 +26,105 @@ function formatTime(value: string): string {
       }).format(date);
 }
 
+const secondsFormat = new Intl.NumberFormat("es", { maximumFractionDigits: 1 });
+
+/** Provider attempts read better from their metadata than from the stored text. */
+function getSummary(event: AgentEvent): string | null {
+  const metadata = event.metadata;
+  if (
+    event.event_type === "provider_attempt" &&
+    typeof metadata === "object" &&
+    metadata !== null &&
+    !Array.isArray(metadata) &&
+    typeof metadata.model === "string"
+  ) {
+    const provider = metadata.provider === "google" ? "Gemini" : "Groq";
+    const result =
+      metadata.outcome === "succeeded"
+        ? "respondió"
+        : typeof metadata.statusCode === "number"
+          ? `falló con HTTP ${metadata.statusCode}`
+          : "no respondió a tiempo";
+    const duration =
+      typeof metadata.durationMs === "number"
+        ? ` en ${secondsFormat.format(metadata.durationMs / 1000)} s`
+        : "";
+    return `${provider} (${metadata.model}) ${result}${duration}`;
+  }
+  return event.output_summary || event.input_summary;
+}
+
 export default function EventTimeline({
   events,
-  connected,
   state,
+  loading,
 }: {
   events: AgentEvent[];
-  connected: boolean;
-  state: "idle" | "connecting" | "connected" | "offline";
+  state: RealtimeState;
+  loading: boolean;
 }) {
+  // Entry motion only for events that arrive after the first render, so the
+  // initial history does not animate in all at once.
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setLive(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  const newestFirst = [...events].reverse();
+
   return (
-    <section className="surface-panel timeline-panel" aria-labelledby="timeline-heading">
-      <div className="panel-heading">
-        <div className="timeline-heading">
-          <div>
-            <h2 id="timeline-heading">Actividad en vivo</h2>
-            <p className="section-subtitle">Registro cronológico de eventos</p>
-          </div>
-        </div>
-        <span
-          className="realtime-pill"
-          data-state={state}
-          aria-live="polite"
-        >
-          <span className="realtime-dot" aria-hidden="true" />
-          {connected
-            ? "En tiempo real"
-            : state === "offline"
-              ? "Reconectando"
-              : state === "idle"
-                ? "Sin ejecución"
-                : "Conectando"}
+    <section className="panel log-panel" aria-labelledby="timeline-heading">
+      <div className="panel-head">
+        <h2 id="timeline-heading" className="panel-title">
+          Registro
+        </h2>
+        <span className="realtime" data-state={state}>
+          <span className="lamp" data-state={state === "connected" ? "live" : "pending"} aria-hidden="true" />
+          {realtimeLabels[state]}
         </span>
       </div>
-      {events.length === 0 ? (
-        <div className="timeline-empty">
-          Aquí aparecerá la actividad de cada agente al iniciar una petición.
+      {loading ? (
+        <div className="log-skeleton" aria-hidden="true">
+          <div className="skeleton skeleton-row" />
+          <div className="skeleton skeleton-row" />
+          <div className="skeleton skeleton-row" />
         </div>
+      ) : newestFirst.length === 0 ? (
+        <p className="empty-state">
+          Cada paso de los agentes quedará anotado aquí con su hora, empezando
+          por el más reciente.
+        </p>
       ) : (
         <ol
-          className="timeline-list"
+          className="log"
+          data-live={live}
           role="log"
-          aria-label="Actividad de los agentes"
+          aria-label="Actividad de los agentes, la más reciente primero"
           aria-live="polite"
-          aria-relevant="additions text"
+          aria-relevant="additions"
+          tabIndex={0}
         >
-          {events.map((event) => (
-            <li className="timeline-item" key={event.id}>
-              <span
-                className="timeline-marker"
-                data-agent={event.agent}
-                aria-hidden="true"
-              >
-                {agentMarks[event.agent]}
-              </span>
-              <div className="timeline-copy">
-                <strong>
-                  {agentNames[event.agent]} · {getEventLabel(event.event_type)}
-                </strong>
-                {(event.output_summary || event.input_summary) && (
-                  <p>{event.output_summary || event.input_summary}</p>
-                )}
-                <time className="event-time" dateTime={event.created_at}>
+          {newestFirst.map((event) => {
+            const summary = getSummary(event);
+            return (
+              <li className="log-item" data-agent={event.agent} key={event.id}>
+                <time className="log-time" dateTime={event.created_at}>
                   {formatTime(event.created_at)}
                 </time>
-              </div>
-            </li>
-          ))}
+                <span className="log-icon">
+                  <AgentIcon agent={event.agent} size={15} />
+                </span>
+                <div className="log-copy">
+                  <p className="log-title">
+                    <span className="log-agent">{identities[event.agent].name}</span>
+                    {getEventLabel(event.event_type)}
+                  </p>
+                  {summary && <p className="log-summary">{summary}</p>}
+                </div>
+              </li>
+            );
+          })}
         </ol>
       )}
     </section>

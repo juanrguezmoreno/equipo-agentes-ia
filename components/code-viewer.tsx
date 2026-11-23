@@ -13,9 +13,11 @@ function artifactKey(artifact: Artifact): string {
 export default function CodeViewer({
   artifacts,
   tasks,
+  loading,
 }: {
   artifacts: Artifact[];
   tasks: Task[];
+  loading: boolean;
 }) {
   const sortedArtifacts = useMemo(
     () =>
@@ -53,22 +55,23 @@ export default function CodeViewer({
     sortedArtifacts.find((artifact) => artifactKey(artifact) === selectedKey) ??
     latestArtifact;
 
+  const isSelectedLatest =
+    selectedArtifact !== null &&
+    latestByPath.get(selectedArtifact.path) === selectedArtifact.revision;
+
   return (
-    <section className="surface-panel" aria-labelledby="code-heading">
-      <div className="panel-heading">
-        <div>
-          <h2 id="code-heading">Proyecto virtual</h2>
-          <p className="section-subtitle">
-            Archivos versionados que produce Develop
-          </p>
-        </div>
+    <section className="panel code-panel" aria-labelledby="code-heading">
+      <div className="panel-head">
+        <h2 id="code-heading" className="panel-title">
+          Proyecto virtual
+        </h2>
         {sortedArtifacts.length > 0 && (
-          <div className="artifact-toolbar">
+          <>
             <label className="sr-only" htmlFor="artifact-version">
               Archivo y revisión
             </label>
             <select
-              className="artifact-select"
+              className="select"
               id="artifact-version"
               value={selectedArtifact ? artifactKey(selectedArtifact) : ""}
               onChange={(event) => setSelectedKey(event.currentTarget.value)}
@@ -78,24 +81,24 @@ export default function CodeViewer({
                 const isLatest = latestByPath.get(artifact.path) === artifact.revision;
                 return (
                   <option key={artifactKey(artifact)} value={artifactKey(artifact)}>
-                    {artifact.path} · r{artifact.revision}
-                    {isLatest ? " · actual" : ""}
-                    {task ? ` · ${task.title}` : ""}
+                    {`${artifact.path}, revisión ${artifact.revision}${isLatest ? " (actual)" : ""}${task ? `, T${task.sequence}` : ""}`}
                   </option>
                 );
               })}
             </select>
-          </div>
+          </>
         )}
       </div>
-      {selectedArtifact ? (
+      {loading ? (
+        <div className="skeleton skeleton-code" aria-hidden="true" />
+      ) : selectedArtifact ? (
         <div className="code-frame">
           <div className="code-frame-top">
             <span className="code-file-name">{selectedArtifact.path}</span>
-            <span className="code-revision">
-              r{selectedArtifact.revision}
-              {latestByPath.get(selectedArtifact.path) ===
-                selectedArtifact.revision && " · actual"}
+            <span className="code-revision" data-latest={isSelectedLatest}>
+              {isSelectedLatest
+                ? `Revisión ${selectedArtifact.revision}, la actual`
+                : `Revisión ${selectedArtifact.revision}`}
             </span>
           </div>
           <div
@@ -110,10 +113,10 @@ export default function CodeViewer({
           </div>
         </div>
       ) : (
-        <div className="code-empty">
-          Aún no hay archivos. El código aparecerá aquí cuando Develop complete
-          una tarea.
-        </div>
+        <p className="empty-state">
+          Develop todavía no ha escrito archivos. Cada versión que guarde se
+          podrá abrir aquí, también las anteriores.
+        </p>
       )}
     </section>
   );
