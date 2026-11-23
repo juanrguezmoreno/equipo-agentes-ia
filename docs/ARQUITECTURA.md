@@ -1,7 +1,7 @@
 # Propuesta de arquitectura (Fase 0)
 
-> Estado: propuesta pendiente de aprobación. Se actualizará durante la
-> implementación; lo descrito aquí no implica que exista ya código desplegado.
+> Estado: propuesta aprobada. La base y el núcleo de agentes se están
+> implementando por fases; no se debe inferir que la aplicación esté desplegada.
 
 ## Objetivo y límites
 
@@ -14,7 +14,9 @@ LLM. La UI presenta el progreso y el historial.
 
 Cada invocación procesa como máximo una transición de agente. El workflow se
 persiste en Postgres y se puede reanudar; una función serverless nunca ejecuta
-el ciclo completo de principio a fin.
+el ciclo completo de principio a fin. La API implementa `POST /api/runs` para
+crear una ejecución y `POST /api/runs/[runId]/step` para reclamar y ejecutar
+un único paso.
 
 ## Arquitectura
 
@@ -42,31 +44,37 @@ flowchart LR
   DB -->|cambios Postgres/Realtime| UI
 ```
 
-La RPC de claim reservaría un paso con una clave idempotente y vencimiento de
-lease antes de llamar al modelo. El resultado se valida y se persiste con una
-transición condicional; un reintento no debe duplicar artefactos ni eventos.
+Las RPC `create_agent_run`, `claim_next_agent_step`, `complete_agent_step` y
+`fail_agent_step` mantienen las transiciones atómicas en Postgres. El claim usa
+un idempotency key por paso e iteración, un lease de 45 segundos y un lock por
+run antes de llamar al modelo. La finalización guarda plan/artefactos/informe,
+actualiza estados y registra eventos en la misma transacción; las llamadas
+repetidas no duplican artefactos ni completan dos veces el mismo intento.
 Errores 429/transitorios se guardan como `next_attempt_at` con backoff
 exponencial acotado y jitter; no se mantiene una función dormida. El cliente
 reanuda cuando llega el momento. Agotados los reintentos de proveedor, el paso
 queda en error visible y recuperable, no en un estado de éxito aparente.
+Los endpoints exigen una sesión Supabase válida. `create_agent_run` limita a
+cinco runs por propietario y hora con un lock transaccional; es una protección
+básica por usuario, no una defensa completa contra creación masiva de cuentas.
 
 ## Modelo de datos propuesto
 
 - `runs`: `id`, `owner_id` (Supabase Auth), petición original, estado global,
   versión del esquema, `max_task_iterations`, marcas de tiempo y error final.
-- `tasks`: `id`, `run_id`, orden, título, descripción, criterios legibles y
-  comprobaciones deterministas tipadas, estado, iteración actual/límite,
-  `next_attempt_at` y referencia a la revisión de artefactos.
+- `agent_tasks`: `id`, `run_id`, orden, título, descripción, criterios legibles
+  y comprobaciones deterministas tipadas en `acceptance_criteria`, estado,
+  iteración actual/límite e informe de test más reciente.
 - `artifacts`: `id`, `run_id`, `task_id`, ruta virtual, número de revisión,
   contenido de texto y autor. Inmutable por revisión; el conjunto de revisiones
   más recientes por ruta representa el proyecto virtual.
 - `agent_events`: `id`, `run_id`, `task_id` nullable, agente, tipo de evento,
   resumen de entrada/salida, estado asociado y `created_at`. Sin claves ni
   contenidos sensibles.
-- `step_attempts` (o campos equivalentes en tareas): clave idempotente,
-  transición reclamada, estado, intentos de proveedor, lease y fecha de próximo
-  reintento. Elegir entre tabla separada y campos en `tasks` al definir la
-  migración; tabla separada facilita auditar cada ejecución.
+- `step_attempts`: clave idempotente, agente y tarea, intento de proveedor,
+  estado, lease y fecha de próximo reintento. Una fila por intento permite
+  auditar las llamadas y los errores sin guardar claves ni respuestas crudas
+  del proveedor.
 
 RLS se activa en todas las tablas. En la primera migración, el usuario autenticado
 solo puede leer sus runs, tareas, dependencias, artefactos, intentos y eventos;
@@ -111,9 +119,9 @@ paso termina en error no recuperable, el run falla y las tareas restantes quedan
 pendientes; así no se reporta el run como completado cuando una tarea falló.
 Esta política se propone para la implementación.
 
-Límite inicial propuesto: tres iteraciones Develop↔Testing por tarea, incluyendo
-la primera entrega de Develop. El valor se guarda en el run y no se cambia a
-mitad del flujo.
+Límite inicial: tres iteraciones Develop↔Testing por tarea, incluyendo la
+primera entrega de Develop. El valor se guarda en el run y no se cambia a mitad
+del flujo. Cada paso de proveedor tiene además un máximo de tres intentos.
 
 ## Contratos de agentes y verificación
 
@@ -129,10 +137,13 @@ Cada agente tiene prompt de sistema y esquema Zod propio:
   decisión de revisión del modelo, incluyendo evidencia.
 
 Las aserciones generadas por el Orquestador se validan y limitan en servidor.
-Testing primero comprueba rutas/tamaños, parseo TypeScript/TSX y todas las
-aserciones deterministas; cualquier fallo determinista impide aprobar. Si pasan,
-un segundo paso LLM revisa el parche frente a petición y criterios. El LLM no
-puede anular fallos deterministas ni producir por sí solo el estado `completed`.
+Testing parsea TypeScript/TSX con TypeScript `transpileModule` (sin ejecutar el
+código), JSON con `JSON.parse` y evalúa cada check (`file_exists`,
+`contains_text` o `exports_symbol`). Cualquier fallo determinista impide
+aprobar y evita gastar otra llamada al modelo. Si todos pasan, el LLM revisa el
+parche frente a petición y criterios. Un esquema Zod exige que tanto los checks
+como la revisión pasen para que el informe sea aprobado; el LLM no puede anular
+fallos deterministas ni producir por sí solo el estado `completed`.
 
 El proveedor se selecciona con `AI_PROVIDER` y el modelo con `AI_MODEL`; claves
 separadas según proveedor (`GOOGLE_GENERATIVE_AI_API_KEY`, por ejemplo, o
@@ -140,15 +151,18 @@ separadas según proveedor (`GOOGLE_GENERATIVE_AI_API_KEY`, por ejemplo, o
 integraciones compatibles con Vercel AI SDK. La interfaz de agentes no debe
 depender del proveedor concreto. El proveedor inicial y modelos exactos se
 confirmarán al implementar, según disponibilidad y cuotas vigentes.
+Las llamadas tienen timeout de 20 segundos y no usan reintentos internos del
+SDK. La salida de cada entrega Develop limita el contenido combinado a 20 000
+caracteres; el contexto virtual acumulado se limita a 20 archivos y 48 000
+caracteres para evitar prompts sin límite.
 
 ## Estructura de carpetas propuesta
 
 ```text
 app/
-  (dashboard)/page.tsx
   api/runs/route.ts
-  api/runs/[runId]/steps/route.ts
-  api/runs/[runId]/route.ts
+  api/runs/[runId]/step/route.ts
+  page.tsx                 # scaffold actual; panel en Fase 3
 components/
   agents/
   runs/
@@ -160,21 +174,22 @@ lib/
   ai/                      # adaptador de proveedor y política de reintentos
   supabase/                 # clientes server/browser y tipos DB
   validation/               # validación del FS virtual
-  rate-limit/
 supabase/
   migrations/
 tests/
   unit/
   e2e/
+lib/**/*.test.ts           # pruebas Vitest actuales del núcleo
 docs/
   ARQUITECTURA.md
   BITACORA.md
   PROCESO-CLAUDE-CODE.md
 ```
 
-La ruta API de pasos recibirá una transición o identificador idempotente; no
-aceptará instrucciones arbitrarias de agente desde el navegador. Los detalles
-de auth SSR, claim RPC y formato exacto de respuestas se concretan en Fase 1/2.
+La ruta API no acepta instrucciones arbitrarias de agente desde el navegador.
+Las RPC de workflow y su migración correctiva ya están aplicadas al proyecto
+enlazado; el lint remoto no presenta errores. La UI en Fase 3 impulsará un paso
+cada vez.
 
 ## Diseño de la interfaz
 
@@ -206,7 +221,7 @@ de auth SSR, claim RPC y formato exacto de respuestas se concretan en Fase 1/2.
 | Acceso a datos de otros usuarios | Auth, RLS por `owner_id`, claves secretas solo en servidor y pruebas de políticas. |
 | Salida del modelo peligrosa o excesiva | Zod, allowlist de rutas, límites de tamaño y parser; no ejecutar el código generado. |
 | Criterios vagos | El plan contiene criterios legibles y aserciones deterministas tipadas; Testing devuelve evidencia. |
-| Coste/abuso en endpoint público | Rate limiting por usuario y límites de cuerpo/tokens; protección adicional por IP si la infraestructura lo permite. |
+| Coste/abuso en endpoint público | Cinco runs por propietario/hora, límites de cuerpo/contexto/tokens e iteraciones; protección adicional por IP si la infraestructura lo permite. |
 | Realtime duplica o pierde eventos | Postgres como fuente de verdad, carga inicial, reconexión/refetch y eventos append-only. |
 | Modelo/proveedor deja de ser compatible | Adaptador separado y pruebas simuladas; secretos y selección por variables. |
 | Publicar gratis no equivale a garantía de disponibilidad | Verificar elegibilidad, límites de Vercel Hobby/Supabase y URL al desplegar; documentar límites. |

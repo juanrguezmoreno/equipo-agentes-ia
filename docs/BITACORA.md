@@ -108,3 +108,71 @@ Anonymous Sign-Ins en la configuración Auth del proyecto; no se modificaron
 ajustes remotos ajenos a la migración.
 
 La Fase 1 queda lista para commit y push a `origin/main`.
+
+## Fase 2 — Agentes y estados (en curso)
+
+### Petición
+
+El usuario indicó «continua» para iniciar la Fase 2 y reiteró que el trabajo
+debe avanzar de forma secuencial, verificarse y publicarse al terminar la fase.
+Se mantienen las decisiones aprobadas: una invocación corta por paso, Gemini
+por Vercel AI SDK con proveedor seleccionable, artefactos virtuales no ejecutados,
+Zod, Testing determinista más revisión LLM, iteraciones acotadas y log de eventos.
+
+### Implementado localmente
+
+- Añadidos AI SDK, adaptadores Google/Groq, Zod y Vitest; el cliente selecciona
+  proveedor/modelo por entorno, desactiva reintentos internos/telemetría y limita
+  cada llamada del modelo a 20 segundos.
+- Añadidos contratos y prompts del Orquestador, Develop y Testing; límites de
+  tareas, archivos y contenido; validación de dependencias y ciclos.
+- Añadida máquina de estados pura con selección por dependencias, límite de
+  iteraciones y backoff exponencial con jitter.
+- Añadidas comprobaciones de sintaxis TypeScript/TSX sin ejecutar los artefactos,
+  parseo JSON y checks deterministas de aceptación. Un fallo determinista bloquea
+  la revisión LLM; el esquema del informe no permite que el LLM anule los checks.
+- Añadido cliente Supabase de servidor con service role, protección por sesión
+  Supabase en endpoints, creación de runs limitada a cinco por propietario/hora
+  y endpoint que procesa como máximo un paso por invocación.
+- Añadida migración local con RPC transaccionales para crear runs, reclamar
+  leases, guardar planes/artefactos/informes y agendar fallos/reintentos.
+- El usuario aplicó `20261124120000_add_agent_step_workflow.sql` con
+  `npx supabase db push --remote`. `migration list --linked` confirma que está
+  registrada en el proyecto correcto; los cuatro RPC existen y solo son
+  ejecutables por `service_role`. Los tipos de BD se regeneraron desde remoto.
+- Añadidas pruebas Vitest con generador LLM simulado para schemas, dependencias,
+  iteraciones, backoff, salidas de agentes y bloqueo ante fallos deterministas.
+
+### Validación y bloqueo actual
+
+- `npm test -- --reporter=dot`: 11 pruebas pasan.
+- `npx tsc --noEmit`, `npm run lint` y `npm run build`: pasan.
+- `npx supabase db lint --linked` encontró un error en la asignación del enum
+  `run_status` dentro de `claim_next_agent_step`, además de avisos de una
+  variable redundante en `complete_agent_step`. Se confirmó mediante consulta
+  remota de solo lectura que las correcciones preparadas coinciden con ambas
+  definiciones instaladas.
+- Se preparó `20261124130000_fix_agent_workflow_lint.sql`, posterior al timestamp
+  de la migración aplicada. El usuario la aplicó con `npx supabase db push
+  --remote`, siguiendo la instrucción de que futuras migraciones se preparen
+  aquí y las aplique el usuario.
+- `migration list --linked` confirma que las migraciones hasta `20261124130000`
+  coinciden local/remoto. La consulta remota de solo lectura confirma el cast
+  a `public.run_status` y que las RPC permanecen ejecutables solo por
+  `service_role`; `db lint --linked` finaliza sin errores.
+- Context7 y el MCP de Supabase no estuvieron disponibles; se usó la CLI
+  autenticada y `db query --remote --read-only` para verificar el proyecto,
+  las funciones y sus permisos. `db lint --remote` requirió credenciales DB no
+  presentes en el entorno de la CLI; el modo `--linked` sí devolvió los
+  diagnósticos del lint remoto.
+
+### Estado
+
+La implementación y la migración están verificadas; falta registrar el commit
+documental y publicar ambos commits en `origin/main`. No empezar Fase 3 hasta
+completar ese push y recibir confirmación del usuario.
+
+El commit de implementación es `5645fd4`
+(`feat(agents): implement persisted agent step workflow`). Esta bitácora y la
+documentación de arquitectura/uso se registran en un commit documental separado
+antes del push de cierre de fase.
