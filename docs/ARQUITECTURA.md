@@ -68,11 +68,19 @@ queda en error visible y recuperable, no en un estado de éxito aparente.
   reintento. Elegir entre tabla separada y campos en `tasks` al definir la
   migración; tabla separada facilita auditar cada ejecución.
 
-RLS se activa en todas las tablas. El propietario solo puede leer sus runs,
-tareas, artefactos y eventos. Las escrituras de workflow se realizan en
-servidor tras validar la sesión, usando las credenciales mínimas necesarias;
-no se expone el service-role key. La publicación de Realtime incluye únicamente
-las tablas necesarias y las suscripciones respetan RLS.
+RLS se activa en todas las tablas. En la primera migración, el usuario autenticado
+solo puede leer sus runs, tareas, dependencias, artefactos, intentos y eventos;
+las escrituras del workflow quedan reservadas al servidor. Las rutas de servidor
+deben verificar sesión y propiedad antes de usar la clave elevada, que se
+mantiene solo en entorno servidor y nunca se expone al navegador. La publicación
+de Realtime incluye únicamente las tablas necesarias y las suscripciones
+respetan RLS. El demo usa sesiones anónimas de Supabase Auth; perder los datos
+del navegador implica perder el acceso a esa sesión.
+
+Los nombres concretos de la migración inicial son `agent_runs`, `agent_tasks`,
+`task_dependencies`, `artifacts`, `agent_events` y `step_attempts`. Se limita
+`max_task_iterations` a 1–5 en base de datos (valor inicial 3), se versionan
+artefactos inmutables y se deniegan escrituras directas a roles de navegador.
 
 ## Máquina de estados
 
@@ -209,6 +217,11 @@ de auth SSR, claim RPC y formato exacto de respuestas se concretan en Fase 1/2.
 - [AI SDK: generación de salidas estructuradas](https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data)
 - [AI SDK: proveedor Google/Gemini](https://ai-sdk.dev/providers/ai-sdk-providers/google)
 - [Supabase Realtime: Postgres Changes](https://supabase.com/docs/guides/realtime/postgres-changes)
+- [Supabase SSR: cliente Next.js y sesiones en cookies](https://supabase.com/docs/guides/auth/server-side/creating-a-client)
+- [Supabase Auth: sesiones anónimas](https://supabase.com/docs/guides/auth/auth-anonymous)
+- [Supabase CLI: migraciones locales](https://supabase.com/docs/guides/local-development/database-migrations)
+- [Supabase Postgres: RLS y grants](https://supabase.com/docs/guides/database/postgres/row-level-security)
+- [Next.js: archivo Proxy](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
 
 La búsqueda de herramientas de esta sesión no expuso Context7 ni los MCP de
 gestión de Supabase/Vercel. Estas referencias se consultaron directamente en
