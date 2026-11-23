@@ -316,7 +316,28 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      claim_next_agent_step: {
+        Args: { p_lease_seconds?: number; p_owner_id: string; p_run_id: string }
+        Returns: Json
+      }
+      complete_agent_step: {
+        Args: { p_attempt_id: string; p_result: Json }
+        Returns: Json
+      }
+      create_agent_run: {
+        Args: { p_owner_id: string; p_request: string }
+        Returns: string
+      }
+      fail_agent_step: {
+        Args: {
+          p_attempt_id: string
+          p_error_code: string
+          p_error_summary?: string
+          p_retry_after_seconds?: number
+          p_retryable: boolean
+        }
+        Returns: Json
+      }
     }
     Enums: {
       agent_name: "orchestrator" | "develop" | "testing" | "system"
