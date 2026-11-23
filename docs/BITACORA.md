@@ -623,3 +623,18 @@ la eligió.
 - La ficha no se ha visto desplazarse en una run real, porque los pasos
   duraron menos de lo que tarda en actualizarse la captura. Su movimiento se
   verificó cambiando `--stop` en el navegador.
+
+### Ajuste tras revisión del usuario
+
+El usuario compartió una captura de su navegador. En escritorio, las paradas
+de la vía y la ficha «Hecha» quedaban centradas en cada columna, mientras que
+los iconos de las estaciones estaban alineados a la izquierda: la ficha quedaba
+unos 130 px a la derecha de su estación. Ahora, a partir de 760 px, cada parada
+cae bajo el icono de su estación y la ficha empieza alineada con él. Medido: las
+paradas quedan en 76/411/747/1082 px y los iconos en 76/412/748/1083 px. En
+móvil se mantiene centrado. La franja oscura a la derecha de la captura queda
+fuera de la página: es espacio del navegador.
+
+El `next dev` heredado en el puerto 3000 dejó de recoger cambios de CSS. Se
+verificó con `next build` + `next start` en el puerto 3100, sin tocar ese
+proceso. Para ver el cambio en :3000 hay que reiniciar ese servidor.

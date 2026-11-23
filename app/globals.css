@@ -1374,6 +1374,29 @@ details[open] > .report-summary::before {
   }
 }
 
+/* Desktop: each stop sits under its station icon (icon centre = column
+   padding + 18px), so stations and lanes read as one track. */
+@media (min-width: 760px) {
+  .lane-ticks::before {
+    left: calc(var(--space-4) + 18px);
+    right: calc(25% - var(--space-4) - 18px);
+  }
+
+  .lane-ticks span {
+    place-items: center start;
+    padding-left: calc(var(--space-4) + 14px);
+  }
+
+  .lane-progress {
+    left: calc(var(--space-4) + 18px);
+  }
+
+  .lane-token {
+    place-items: center start;
+    padding: 0 var(--space-2) 0 var(--space-4);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Reduced motion: keep colour and opacity cues, drop movement         */
 /* ------------------------------------------------------------------ */
