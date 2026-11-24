@@ -1150,3 +1150,7 @@ no. Ninguna mostró errores de consola.
   desbordamiento en móvil dentro del flujo principal.
 - Despliegue de producción: `f50780a` en READY, sin errores de ejecución.
 - Bundle de producción: sin secretos.
+
+### Aprobación
+
+Fase 5 aprobada por el usuario el 2026-11-24 (último commit de la fase `9a6bb2e` en `origin/main`; producción en https://equipo-agentes-ia-gilt.vercel.app).
