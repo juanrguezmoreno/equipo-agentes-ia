@@ -1027,6 +1027,7 @@ export default function Dashboard() {
         <div className="lower">
           <EventTimeline
             events={selectedEvents}
+            tasks={selectedTasks}
             state={realtimeState}
             loading={snapshotLoading && !dataError}
             runId={selectedRun?.id ?? null}

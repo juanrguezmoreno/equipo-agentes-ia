@@ -59,7 +59,7 @@ export function getAgentPresentation(
     .sort((left, right) => left.created_at.localeCompare(right.created_at));
   const lastEvent = agentEvents[agentEvents.length - 1];
   const message =
-    (lastEvent && describeEventSummary(lastEvent)) ||
+    (lastEvent && describeEventSummary(lastEvent, tasks)) ||
     lastEvent?.output_summary?.trim() ||
     lastEvent?.input_summary?.trim() ||
     agentFallback[agent];

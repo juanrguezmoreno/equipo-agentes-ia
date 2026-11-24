@@ -8,6 +8,7 @@ import { getEventLabel } from "@/lib/dashboard/presentation";
 import type { Tables } from "@/types/database";
 
 type AgentEvent = Tables<"agent_events">;
+type Task = Tables<"agent_tasks">;
 type RealtimeState = "idle" | "connecting" | "connected" | "offline";
 
 const realtimeLabels: Record<RealtimeState, string> = {
@@ -31,7 +32,7 @@ function formatTime(value: string): string {
 const secondsFormat = new Intl.NumberFormat("es", { maximumFractionDigits: 1 });
 
 /** Provider attempts read better from their metadata than from the stored text. */
-function getSummary(event: AgentEvent): string | null {
+function getSummary(event: AgentEvent, tasks: Task[]): string | null {
   const metadata = event.metadata;
   if (
     event.event_type === "provider_attempt" &&
@@ -55,16 +56,18 @@ function getSummary(event: AgentEvent): string | null {
         : "";
     return `${provider} (${metadata.model}) ${result}${duration}`;
   }
-  return describeEventSummary(event) ?? (event.output_summary || event.input_summary);
+  return describeEventSummary(event, tasks) ?? (event.output_summary || event.input_summary);
 }
 
 export default function EventTimeline({
   events,
+  tasks,
   state,
   loading,
   runId,
 }: {
   events: AgentEvent[];
+  tasks: Task[];
   state: RealtimeState;
   loading: boolean;
   runId: string | null;
@@ -119,7 +122,7 @@ export default function EventTimeline({
           tabIndex={0}
         >
           {newestFirst.map((event) => {
-            const summary = getSummary(event);
+            const summary = getSummary(event, tasks);
             return (
               <li className="log-item" data-agent={event.agent} key={event.id}>
                 <time className="log-time" dateTime={event.created_at}>

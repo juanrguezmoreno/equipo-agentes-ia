@@ -399,22 +399,59 @@ const shortFailureSummaries: Record<string, string> = {
   agent_step_error: "El agente falló de forma inesperada.",
 };
 
-/**
- * Spanish one-line summary for a failure or retry event. The stored text is
- * written by the server in English for the audit log; the UI explains it.
- */
-export function describeEventSummary(event: AgentEvent): string | null {
-  if (event.event_type !== "agent_failed" && event.event_type !== "retry_scheduled") {
+const systemSummaries: Record<string, string> = {
+  "A new agent run was created.": "El Orquestador recibió la petición.",
+  "All planned tasks passed testing.": "Testing aprobó todas las tareas del plan.",
+  "Task dependencies could not be resolved.":
+    "Algunas tareas dependían de otras que no se pudieron completar.",
+  "Task iteration limit reached after failed testing.":
+    "Testing rechazó la tarea en todas las iteraciones permitidas.",
+};
+
+/** Iteration encoded in a step key such as "task:<id>:develop:1" (0-based). */
+function getStepIteration(event: AgentEvent): number | null {
+  const metadata = event.metadata;
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
     return null;
   }
-  const code = getErrorCode(event);
-  if (code && shortFailureSummaries[code]) {
-    return shortFailureSummaries[code];
+  const match =
+    typeof metadata.stepKey === "string" ? /:(\d+)$/.exec(metadata.stepKey) : null;
+  return match ? Number(match[1]) + 1 : null;
+}
+
+/**
+ * Spanish one-line summary for events whose stored text is written by the
+ * server (RPCs and error classification) in English for the audit log.
+ * Steps are named after their task. Returns null to keep the stored text,
+ * which for plans, deliveries and reviews is the agents' own summary.
+ */
+export function describeEventSummary(
+  event: AgentEvent,
+  tasks: ReadonlyArray<{ id: string; title: string }> = [],
+): string | null {
+  if (event.event_type === "agent_failed" || event.event_type === "retry_scheduled") {
+    const code = getErrorCode(event);
+    if (code && shortFailureSummaries[code]) {
+      return shortFailureSummaries[code];
+    }
+    if (/exhausted its retry limit/i.test(event.output_summary ?? "")) {
+      return shortFailureSummaries.provider_attempts_exhausted;
+    }
+    return null;
   }
-  if (/exhausted its retry limit/i.test(event.output_summary ?? "")) {
-    return shortFailureSummaries.provider_attempts_exhausted;
+  if (event.event_type === "step_started") {
+    if (event.agent === "orchestrator") {
+      return "Plan de tareas";
+    }
+    const task = tasks.find((candidate) => candidate.id === event.task_id);
+    if (!task) {
+      return null;
+    }
+    const iteration = getStepIteration(event);
+    return iteration && iteration > 1 ? `${task.title} (iteración ${iteration})` : task.title;
   }
-  return null;
+  const stored = event.output_summary?.trim() ?? "";
+  return systemSummaries[stored] ?? null;
 }
 
 /** Maps an exception thrown by `fetch` (or our own parsing) to a message. */

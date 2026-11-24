@@ -183,9 +183,50 @@ describe("describeEventSummary", () => {
     ).toBe("Se agotaron los reintentos del paso.");
   });
 
-  it("leaves other events alone", () => {
+  it("keeps the agents' own summaries", () => {
     expect(
-      describeEventSummary(event({ event_type: "step_started", metadata: { errorCode: "rate_limited" } })),
+      describeEventSummary(
+        event({ event_type: "plan_completed", output_summary: "Plan en dos tareas." }),
+      ),
     ).toBeNull();
+  });
+
+  // Regression: the log showed "Implement task 1" / "Test task 1".
+  it("names steps after their task and iteration", () => {
+    const tasks = [{ id: "00000000-0000-4000-8000-0000000000a1", title: "Formulario de contacto" }];
+    const step = (agent: AgentEvent["agent"], stepKey: string, input: string) =>
+      event({
+        event_type: "step_started",
+        agent,
+        task_id: agent === "orchestrator" ? null : tasks[0].id,
+        input_summary: input,
+        metadata: { attempt: 1, stepKey },
+      });
+    expect(describeEventSummary(step("orchestrator", "plan", "Create an ordered task plan."), tasks)).toBe(
+      "Plan de tareas",
+    );
+    expect(
+      describeEventSummary(step("develop", `task:${tasks[0].id}:develop:0`, "Implement task 1."), tasks),
+    ).toBe("Formulario de contacto");
+    expect(
+      describeEventSummary(step("testing", `task:${tasks[0].id}:test:1`, "Test task 1."), tasks),
+    ).toBe("Formulario de contacto (iteración 2)");
+    // Without the task list the stored text is kept rather than guessed.
+    expect(
+      describeEventSummary(step("develop", `task:${tasks[0].id}:develop:0`, "Implement task 1.")),
+    ).toBeNull();
+  });
+
+  it("translates system summaries written by the RPCs", () => {
+    expect(
+      describeEventSummary(
+        event({ event_type: "run_created", agent: "system", output_summary: "A new agent run was created." }),
+      ),
+    ).toBe("El Orquestador recibió la petición.");
+    expect(
+      describeEventSummary(
+        event({ event_type: "run_completed", agent: "system", output_summary: "All planned tasks passed testing." }),
+      ),
+    ).toBe("Testing aprobó todas las tareas del plan.");
   });
 });
