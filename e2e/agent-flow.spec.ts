@@ -90,6 +90,21 @@ test.describe("flujo principal", () => {
     // No failure notice is shown for a completed run.
     await expect(page.locator('.notice[data-tone="danger"]')).toHaveCount(0);
 
+    // Regression (real run): a long artifact path in the file picker made a
+    // 390 px phone scroll sideways by 7 px.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fileSelect.evaluate((select: HTMLSelectElement) => {
+      const option = document.createElement("option");
+      option.textContent =
+        "app/contacto/_components/formulario-de-contacto.tsx, revisión 3 (actual), T2";
+      select.append(option);
+    });
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBe(0);
+    await page.setViewportSize({ width: 1280, height: 720 });
+
     // Motion: events that arrived live slid in...
     const liveEntries = (await logEntries()).slice(entriesBefore);
     expect(liveEntries.filter(Boolean).length).toBeGreaterThan(0);
