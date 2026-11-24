@@ -1029,7 +1029,7 @@ export default function Dashboard() {
             events={selectedEvents}
             state={realtimeState}
             loading={snapshotLoading && !dataError}
-            hasRun={Boolean(selectedRun)}
+            runId={selectedRun?.id ?? null}
           />
           <CodeViewer
             artifacts={selectedArtifacts}

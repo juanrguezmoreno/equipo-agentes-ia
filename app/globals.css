@@ -490,6 +490,21 @@ pre {
   background: var(--color-danger-tint);
 }
 
+/* Notices are occasional; a short entrance softens the layout shift. Only
+   insertion animates (the retry countdown re-renders text, not the box). */
+.notice {
+  transition:
+    opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+
+@starting-style {
+  .notice {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
 .notice-copy {
   flex: 1 1 28rem;
   min-width: 0;
@@ -1506,7 +1521,8 @@ details[open] > .report-summary::before {
   }
 
   @starting-style {
-    .log[data-live="true"] .log-item {
+    .log[data-live="true"] .log-item,
+    .notice {
       transform: none;
     }
   }

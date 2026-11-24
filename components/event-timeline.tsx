@@ -62,20 +62,26 @@ export default function EventTimeline({
   events,
   state,
   loading,
-  hasRun,
+  runId,
 }: {
   events: AgentEvent[];
   state: RealtimeState;
   loading: boolean;
-  hasRun: boolean;
+  runId: string | null;
 }) {
-  // Entry motion only for events that arrive after the first render, so the
-  // initial history does not animate in all at once.
-  const [live, setLive] = useState(false);
+  const hasRun = runId !== null;
+  // Entry motion only for events that arrive while a run is being watched.
+  // "Live" switches on one frame after that run's history has rendered, so
+  // neither the initial load nor switching runs slides the whole log in.
+  const [liveRunId, setLiveRunId] = useState<string | null>(null);
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => setLive(true));
+    if (loading || runId === null) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => setLiveRunId(runId));
     return () => window.cancelAnimationFrame(frame);
-  }, []);
+  }, [loading, runId]);
+  const live = !loading && runId !== null && liveRunId === runId;
 
   const newestFirst = [...events].reverse();
 

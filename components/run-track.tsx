@@ -276,7 +276,6 @@ function TaskLane({
       <div
         className="lane-rail"
         data-status={task.status}
-        style={{ "--stop": stop } as CSSProperties}
       >
         <span className="sr-only">Estado: {taskStatusLabels[task.status]}</span>
         <span className="lane-ticks" aria-hidden="true">
@@ -285,9 +284,16 @@ function TaskLane({
           <span />
           <span />
         </span>
-        <span className="lane-progress" aria-hidden="true" />
+        {/* --stop is set on each moving element, not on the rail, so a
+            change only restyles the two elements whose transform moves. */}
+        <span
+          className="lane-progress"
+          style={{ "--stop": stop } as CSSProperties}
+          aria-hidden="true"
+        />
         <span
           className="lane-token"
+          style={{ "--stop": stop } as CSSProperties}
           data-agent={stopAgent}
           data-status={task.status}
           data-thinking={thinking}
