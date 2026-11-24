@@ -4,9 +4,14 @@ Aplicación Next.js para coordinar un Orquestador, Develop y Testing. El estado
 del workflow, los eventos y los artefactos virtuales se persisten en Supabase.
 Consulta [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) para el diseño y sus límites.
 
-> Estado: fases 0–4 implementadas y verificadas en local (la 4 añade errores
-> claros, validación, rate limiting y tests E2E). Todavía no hay una URL
-> pública desplegada.
+**Demo pública:** https://equipo-agentes-ia-gilt.vercel.app
+
+> Estado: fases 0–5 completadas. La app está desplegada en Vercel (plan Hobby)
+> sobre el proyecto Supabase existente, con modelos de nivel gratuito
+> (Gemini y, como respaldo, Groq Free). Las cuotas gratuitas, los límites de
+> uso de la app (ver «Comprobaciones») y la disponibilidad de los proveedores
+> pueden variar; no se garantiza un uso ilimitado. No envíes datos sensibles:
+> el nivel gratuito de Gemini puede usar el contenido para mejorar productos.
 
 ## Requisitos
 
@@ -137,6 +142,19 @@ Los límites de uso se ajustan con `RATE_LIMIT_RUNS_PER_USER_HOUR`,
 `RATE_LIMIT_RUNS_PER_USER_DAY`, `RATE_LIMIT_RUNS_GLOBAL_DAY`,
 `RATE_LIMIT_STEPS_PER_USER_MINUTE` y `RATE_LIMIT_STEPS_PER_USER_DAY` (ver
 `.env.example`).
+
+Comprobaciones contra un despliegue:
+
+```powershell
+# Busca claves de servidor en el bundle del cliente (no lee .env ni imprime valores)
+node scripts/scan-client-bundle.mjs https://equipo-agentes-ia-gilt.vercel.app
+# Ejecución REAL con el ejemplo «Página de contacto»: gasta cuota de modelos
+node scripts/prod-run.mjs https://equipo-agentes-ia-gilt.vercel.app docs/screenshots/fase5
+```
+
+El despliegue de Vercel se actualiza solo con cada push a `main`. Las variables
+de producción se configuran en el panel de Vercel. No definas `AI_PROVIDER=mock`
+ni las `RATE_LIMIT_*` de los E2E: producción usa los límites por defecto.
 
 `npm test` arranca Vitest mediante `scripts/vitest.mjs`, que normaliza la letra
 de unidad en Windows: desde un terminal abierto en `d:\…` Vitest cargaba su

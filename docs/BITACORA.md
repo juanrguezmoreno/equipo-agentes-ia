@@ -912,3 +912,241 @@ El usuario pidió:
 - En las capturas simuladas, el indicador de Realtime muestra «Conectando»,
   porque el socket simulado no contesta. Es esperable y no afecta a lo que
   documentan.
+
+## Fase 5 — Despliegue (2026-11-24)
+
+### Petición
+
+El usuario importó el repositorio en Vercel, configuró las variables de
+entorno desde el panel (pidió no leerlas ni mostrarlas) e hizo una prueba real
+que completó el ciclo en 12 s. También configuró en Supabase un límite de 30
+inicios de sesión anónimos por IP y hora.
+
+Pidió las siguientes tareas:
+
+- **Despliegue:**
+  - Revisar el despliegue y los logs con el MCP de Vercel.
+  - Indicar si Supabase necesita configuración para el dominio.
+  - Confirmar que el bundle del cliente no expone claves.
+- **Mejoras detectadas en su prueba:**
+  - Que los agentes respondan en el idioma de la petición.
+  - Un Testing más estricto, con comprobaciones de Next.js App Router y de
+    accesibilidad.
+  - Que el Orquestador planifique de 2 a 4 tareas con criterios
+    verificables.
+  - Tests de regresión para las tres.
+  - Que el registro nombre las tareas por su título.
+  - Confirmar que el límite de 60 pasos por minuto solo se usa en E2E.
+- **Cierre:** prueba real en la URL pública con capturas de una iteración
+  rechazada y corregida, URL en el README, commit y push.
+
+### Mitigación: límite de inicios de sesión anónimos en Supabase
+
+El usuario configuró en Supabase (Auth → Rate Limits) un máximo de **30
+inicios de sesión anónimos por IP y hora**. Es la primera barrera contra la
+creación masiva de sesiones anónimas, el riesgo que quedó abierto en la Fase 4
+al no haber límite por IP en la app.
+
+Se combina con los límites propios de la app (runs y pasos por usuario, y runs
+globales al día). Un atacante con una sola IP puede abrir como mucho 30
+sesiones por hora. Cada una puede lanzar 5 runs por hora, y el límite global
+de 150 runs al día acota el total. Los E2E se adaptaron para abrir una única
+sesión por tanda y no se debe relajar este límite para los tests.
+
+### Despliegue y logs (MCP de Vercel)
+
+- **Acceso.** El MCP necesitó que el usuario autorizara el acceso al equipo
+  `juan-rguez`. Hasta entonces todas las llamadas devolvían 403.
+- **Despliegue.** Proyecto `equipo-agentes-ia` en producción en
+  https://equipo-agentes-ia-gilt.vercel.app. Despliega automáticamente desde
+  `main`, en la región `iad1`, con Next.js 16.4.6 y Turbopack.
+- **Build.** Correcto en unos 15 s, TypeScript incluido. El único aviso es
+  `npm warn Unknown env config "cache-dir"`, que viene de la infraestructura de
+  Vercel y no del proyecto.
+- **Ejecución.** Sin errores en 24 h (`get_runtime_errors`). Hobby solo conserva
+  1 h de logs de ejecución.
+- **Variables.** Se revisaron solo los nombres, sin descifrar valores: las tres
+  de Supabase, `AI_PROVIDER`, `AI_MODEL`, `GEMINI_MODEL`,
+  `GOOGLE_GENERATIVE_AI_API_KEY` y `GROQ_API_KEY`. `AI_MODEL` solo se usa
+  cuando `AI_PROVIDER=groq`; con Google es inocua.
+- **Punto 9.** No hay ninguna variable `RATE_LIMIT_*` ni `AI_MOCK_*` en Vercel,
+  así que producción usa los valores por defecto del código: 10 pasos con
+  modelo por usuario y minuto. El valor 60 solo lo fija
+  `playwright.config.ts` en el `env` del servidor de E2E.
+
+### Supabase: Site URL y Redirect URLs
+
+No hace falta configurarlos para que la app funcione. Solo usa sesiones
+anónimas (`signInAnonymously`) y el código no tiene `redirectTo`, OAuth, OTP
+ni enlaces por email. Recomendación: poner la URL de producción como Site URL,
+para que no quede `http://localhost:3000` si en el futuro se añade login por
+email.
+
+### Claves en el bundle del cliente
+
+`scripts/scan-client-bundle.mjs` analiza `.next/static` o una URL desplegada:
+la página y todos sus scripts del mismo origen. Busca claves de Supabase
+(`sb_secret_`), Google (`AIza`), Groq (`gsk_`), `sk-` y bloques PEM, y decodifica
+cada JWT para informar solo de su `role`. Nunca lee archivos `.env` ni imprime
+valores.
+
+- **Build local:** 11 archivos, ningún secreto.
+- **Producción:** 9 archivos, ningún secreto ni JWT. Solo aparece la clave
+  `sb_publishable_` prevista.
+
+### Mejoras de la prueba real
+
+- **Idioma.** Los tres prompts incluyen una regla común: todos los textos
+  legibles (resúmenes, títulos, criterios, hallazgos y comentarios) van en el
+  idioma de la petición. Los mensajes deterministas y el resumen de bloqueo de
+  Testing pasan a español.
+- **Testing con convenciones** (`lib/validation/conventions.ts`, sobre el AST
+  de TypeScript, sin ejecutar nada):
+  - **Next.js:**
+    - No usar `pages/`.
+    - `page.tsx` y `layout.tsx` exportan por defecto.
+    - `'use client'` como directiva inicial si hay hooks (salvo `use` y
+      `useId`) o manejadores `on*`.
+    - Sin `metadata` en componentes de cliente.
+  - **Accesibilidad:**
+    - Cada campo con un label asociado (`htmlFor` e `id`, envuelto en
+      `<label>`, o `aria-label`).
+    - `required` o `aria-required` si el label lo marca como obligatorio.
+    - Los ids que se referencian existen.
+    - `alt` en las imágenes y nombre accesible en los botones.
+  - **Criterio conservador:** lo que no es literal (ids construidos con props,
+    spreads) no se puede verificar y no cuenta como fallo.
+  - **Ámbito:** solo se comprueban los archivos cuya última revisión escribió
+    la tarea en prueba, para que un fallo de otra tarea no la bloquee.
+- **Orquestador.** Con varios entregables debe planificar de 2 a 4 tareas, cada
+  una con sus propios archivos. Lleva entre 2 y 4 criterios verificables
+  leyendo los archivos y de 1 a 3 checks que los reflejen. El prompt incluye el
+  ejemplo de la página de contacto. El límite de tokens del plan sube a 2600.
+- **Registro.**
+  - Los pasos llevan el título de la tarea y la iteración («Crear la página
+    de contacto con formulario accesible (iteración 2)»).
+  - Los eventos de sistema se traducen en la UI, sin migración.
+  - Los resúmenes de plan, entrega y revisión son ya los de los agentes, en el
+    idioma de la petición.
+- **Tests de regresión.** Hay 104 tests unitarios.
+  - El `src/pages/Contact.tsx` que se aprobó en la prueba del usuario falla
+    ahora 3 comprobaciones, y Testing lo bloquea sin llamar al modelo.
+  - Para el idioma y el tamaño del plan, que dependen del modelo, los tests
+    fijan las instrucciones y las entradas de cada agente. El efecto se
+    comprobó en las ejecuciones reales.
+
+### Ejecuciones reales en producción
+
+Se lanzaron con `scripts/prod-run.mjs`: Playwright pulsa el ejemplo «Página de
+contacto», espera a que termine y guarda el registro y las capturas. Antes de
+cada nueva se revisó el registro de la anterior.
+
+1. **Ejecución 1 de 10** (`e788f74`). Completada en unos 22 s.
+   - **Bucle natural:** Testing bloqueó `app/contacto/page.tsx` por
+     `nextjs:use-client`, Develop lo corrigió y Testing aprobó, todo en
+     español.
+   - **Fallos detectados:**
+     - La iteración del registro iba adelantada en uno: el `stepKey` ya
+       empieza en 1.
+     - «A new agent run was created.» seguía en inglés, porque está en
+       `input_summary`.
+     - El Orquestador planificó página, formulario y datos como una sola
+       tarea.
+   - Se corrigieron los tres en `09b038b`.
+2. **Ejecución 2 de 10** (`09b038b`). Completada en unos 36 s.
+   - **Plan:** dos tareas, el módulo de datos y la página.
+   - **Bucle natural:** Testing bloqueó la página por `'use client'` y Develop
+     la corrigió en la iteración 2.
+   - **Fallback:** Gemini 3.5 devolvió 503 y respondió Gemini 3.1.
+   - **Problema en móvil:** la página tenía 7 px de scroll horizontal a 390 px.
+     El grid de `.panel` tenía una columna implícita `auto` que crecía hasta la
+     opción más larga del selector de archivos.
+   - **Arreglo** (`a80ee31`): columna `minmax(0, 1fr)`. Un test de regresión
+     reproduce el desbordamiento (59 px antes del arreglo, 0 después).
+3. **Ejecución 3 de 10** (`a80ee31`). Completada en unos 41 s.
+   - **Plan:** tres tareas, datos, formulario y página.
+   - **Móvil:** 0 px de scroll horizontal.
+   - **Fallback:** dos 503 de Gemini 3.5 con respuesta de Gemini 3.1.
+   - **Sin rechazo:** Develop acertó a la primera.
+   - **Fuera de ámbito:** Develop escribió en la tarea 2 también la página,
+     que era de la tarea 3.
+4. **Ejecución 4 de 10** (`a80ee31`). **Fallida** en unos 65 s: Testing
+   rechazó la tarea 2 en las tres iteraciones permitidas.
+   - **Diagnóstico** con la sesión guardada, leyendo los informes y las
+     revisiones:
+     - El plan era incoherente. `file_exists` y `exports_symbol` apuntaban a
+       `app/contacto/_components/ContactForm.tsx`, pero `contains_text`
+       buscaba `htmlFor` en `app/_components/ContactForm.tsx`.
+     - Develop entregó tres veces el mismo archivo, que era correcto, porque
+       el mensaje decía «no contiene el texto» y no que el archivo no
+       existía.
+   - **Funcionamiento correcto:** el aviso «Testing rechazó la tarea
+     demasiadas veces» y el límite de iteraciones.
+   - **Corrección** (`f50780a`):
+     - Los `contains_text` y `exports_symbol` dicen si el archivo no existe.
+     - El prompt exige que los checks usen las rutas de la tarea.
+     - Una reparación determinista y estrecha alinea, dentro de una tarea,
+       los checks con el mismo nombre de archivo en carpetas distintas,
+       tomando la ruta del `file_exists`. Si se repara algo, el resumen del
+       plan lo indica («Se alinearon N rutas de comprobación…») y queda en
+       el log del servidor.
+     - Hay tests con el plan exacto de esta ejecución.
+5. **Ejecución 5 de 10** (`f50780a`). Completada en unos 29 s, con tres tareas
+   y sin rechazo.
+6. **Ejecución 6 de 10** (`f50780a`). Completada en unos 20 s, con tres tareas
+   y sin rechazo. Aquí se pararon las pruebas reales: no tiene sentido gastar
+   cupo esperando un rechazo aleatorio, y no se simulan fallos. Quedan 4 de 10
+   para hoy.
+
+Las ejecuciones 1, 2 y 4 tuvieron rechazos reales de Testing y las 3, 5 y 6
+no. Ninguna mostró errores de consola.
+
+### Capturas (`docs/screenshots/fase5/`)
+
+- **Iteración rechazada y corregida.** Es la ejecución 2, la única de las
+  posteriores a los arreglos de idioma, plan y registro en la que Testing
+  rechazó una entrega y Develop la corrigió:
+  - `ejecucion2-rechazo-en-curso-escritorio.png`: el momento del rechazo.
+  - `ejecucion2-iteracion-corregida-escritorio.png`: la iteración 1
+    bloqueada por `nextjs:use-client` (usa `onSubmit` sin la directiva) y la
+    iteración 2 aprobada, con `'use client'` en el visor.
+  - `ejecucion2-iteracion-corregida-movil-antes-del-arreglo.png`: la misma
+    ejecución a 390 px. **Tiene los 7 px de desbordamiento horizontal que
+    luego se corrigieron**. No se pudo repetir tras el arreglo, porque esa
+    sesión no se guardó y ninguna ejecución posterior tuvo un rechazo
+    natural.
+  - `ejecucion2-registro.txt`: el registro completo.
+- **Estado final tras todos los arreglos.** Es la ejecución 6:
+  `ejecucion6-plan-tres-tareas-escritorio.png` y `-movil.png`, sin scroll
+  horizontal y con el registro en español nombrado por tarea, más
+  `ejecucion6-registro.txt`.
+- `ejecucion4-registro-fallida.txt`: el registro del fallo por plan
+  incoherente.
+
+### Pendientes y observaciones
+
+- **Develop se sale de su tarea.** En las ejecuciones 3 y 5 escribió el
+  archivo de la página en la tarea del formulario. No rompe nada (la tarea
+  siguiente lo revisa y lo actualiza), pero desordena el historial por tarea.
+  Opciones: restringir en el servidor qué rutas puede escribir cada tarea, o
+  reforzar el prompt.
+- **Develop no detecta que se ha atascado.** Si entrega un archivo idéntico
+  tras un rechazo determinista, repetirá el mismo fallo. Se podría detectar
+  y cortar antes para ahorrar llamadas.
+- **El modelo decide.** El idioma y el número de tareas dependen del modelo:
+  en las 5 ejecuciones posteriores a los arreglos fueron correctos, pero los
+  tests unitarios solo pueden fijar las instrucciones.
+- **Logs de ejecución.** Hobby solo conserva 1 h; no hay drenaje a un
+  servicio externo.
+- **`AI_MODEL` en Vercel.** Está definida pero no se usa con
+  `AI_PROVIDER=google`. Se puede borrar para evitar confusión.
+
+### Verificación final
+
+- `npm test`: 109 tests unitarios pasan.
+- `npx tsc --noEmit` y `npm run lint`: sin errores.
+- `npm run build`: correcto, en local y en Vercel.
+- E2E con el mock (Playwright, con build): 8 de 8, incluido el nuevo test de
+  desbordamiento en móvil dentro del flujo principal.
+- Despliegue de producción: `f50780a` en READY, sin errores de ejecución.
+- Bundle de producción: sin secretos.
