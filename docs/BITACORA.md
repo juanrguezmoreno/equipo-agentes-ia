@@ -1154,3 +1154,189 @@ no. Ninguna mostró errores de consola.
 ### Aprobación
 
 Fase 5 aprobada por el usuario el 2026-11-24 (último commit de la fase `9a6bb2e` en `origin/main`; producción en https://equipo-agentes-ia-gilt.vercel.app).
+
+### Ajustes del usuario tras la aprobación
+
+- **Vercel:** borró la variable `AI_MODEL`, que estaba definida pero no se usa
+  con `AI_PROVIDER=google`.
+- **Supabase:** cambió la Site URL de Auth para que apunte al dominio de
+  producción (https://equipo-agentes-ia-gilt.vercel.app). La app solo usa
+  sesiones anónimas, sin redirecciones, pero así no queda `localhost`.
+
+## Fase 5.5 — Arreglos de los agentes (2026-11-24)
+
+### Petición
+
+El usuario pidió dos arreglos y su verificación:
+
+1. **Alcance de Develop.** El Orquestador asigna a cada tarea los archivos que
+   puede crear o modificar. Develop solo escribe en esos, y una comprobación
+   determinista rechaza cualquier escritura fuera de su alcance.
+2. **Reenvíos idénticos.** Si Develop reenvía lo mismo tras un rechazo
+   (comparando el hash con la revisión anterior), no se manda a Testing: se le
+   devuelve con un aviso explícito y el informe de fallos, y cuenta como
+   iteración.
+3. **Verificación.** Tests de regresión de ambos casos, una prueba real en
+   producción con «Página de contacto» y la captura de una iteración rechazada
+   y corregida.
+
+### Decisiones
+
+- **Sin migración ni cambios en la máquina de estados.** La RPC del plan solo
+  persiste `criteria` y `checks`, así que los `files` declarados se guardan
+  como checks `file_exists`. El alcance de una tarea es el conjunto de rutas
+  de sus checks; la reparación de rutas ya los mantiene coherentes. Redefinir
+  la RPC habría exigido otra migración aplicada por el usuario.
+- **El alcance se aplica en el servidor.** Develop recibe `allowedFiles`. Lo
+  que escriba fuera no se guarda nunca: se registra un evento
+  `scope_violation` (rutas e iteración) y Testing lo reporta como
+  `alcance:<ruta>`. Si todo lo propuesto está fuera, se reenvían sin cambios
+  los archivos vigentes de la tarea, para que la máquina de estados avance y
+  el fallo cuente como iteración. Si la tarea aún no tiene archivos, el paso se
+  reintenta como error transitorio.
+- **La barrera de reenvío va dentro del paso de Testing.** La máquina de
+  estados exige pasar de Develop a Testing, así que la barrera va antes del
+  agente de Testing:
+  - No ejecuta comprobaciones ni llama al modelo.
+  - Si, tras un rechazo, todos los archivos entregados tienen el mismo
+    SHA-256 que su revisión anterior, devuelve un informe fallido.
+  - Ese informe lleva el aviso `sin-cambios` (con el prefijo del hash), los
+    fallos de alcance, los checks fallidos anteriores y los hallazgos de la
+    revisión sin resolver.
+  - Cuenta como iteración porque es un rechazo de Testing.
+  - Los archivos de la entrega se reconocen porque comparten la marca de
+    tiempo de su evento `development_completed`: se escriben en la misma
+    transacción.
+- **UI.** Nueva etiqueta «Escritura fuera de alcance» en el registro.
+
+### Tests de regresión
+
+- **Unitarios.** 119 en total; lo nuevo cubre:
+  - el alcance desde los checks y la separación dentro/fuera;
+  - que los archivos declarados se guarden como `file_exists`;
+  - que la barrera bloquee los reenvíos idénticos y deje pasar las entregas
+    cambiadas, parcialmente cambiadas, primeras o posteriores a una
+    aprobación;
+  - que Testing no llame al modelo ni ante un reenvío ni ante un fallo de
+    alcance.
+- **E2E con la cadena real.** API → RPC → barrera, con el modelo simulado y
+  el nuevo escenario `[simular:alcance-y-reenvio]`:
+  - el archivo fuera de alcance no aparece en el visor;
+  - el registro muestra la escritura fuera de alcance y el reenvío
+    bloqueado;
+  - la tarea se aprueba en la iteración 3 de 3.
+
+  9 de 9 E2E pasan.
+- **Error previo destapado por el E2E.** La migración
+  `20261124140000_store_testing_iteration_reports.sql` guarda en el evento de
+  Testing la iteración `iteration_count - 1` solo si `iteration_count <
+  max_iterations`. Como evalúa el contador ya incrementado, un rechazo en la
+  iteración `max - 1` queda numerado como la siguiente, y los informes salían
+  como 1, 3, 3. La UI numera ahora los informes por orden cronológico: cada
+  iteración tiene exactamente un informe de Testing. No hace falta migración.
+
+### Ejecuciones reales en producción (7–9 de 10 del día)
+
+7. **Ejecución 7** (`753783d`). Completada en unos 44 s, con tres tareas.
+   - El alcance se nota: en la tarea del formulario, Develop ya solo escribió
+     su archivo, cuando en las ejecuciones 3 y 5 también había escrito la
+     página.
+   - Sin rechazo.
+8. **Ejecución 8** (`753783d`). Completada en unos 108 s y **ejerció de forma
+   natural los dos mecanismos**:
+   - **Iteración 1:** la revisión de Testing rechazó el formulario porque
+     «falta la página de contacto». Ese trabajo era de la tarea 3, así que la
+     revisión se excedió.
+   - **Iteración 2:** Develop intentó escribir `app/contacto/page.tsx`, que no
+     se guardó y se registró como «Escritura fuera de alcance». Su archivo del
+     formulario era idéntico al rechazado, y la barrera lo devolvió sin
+     probar.
+   - **Iteración 3:** Develop añadió el export por defecto y Testing aprobó.
+   - **Proveedores:** hubo 503 y timeouts de Gemini, y respondió Groq.
+   - **Arreglo derivado** (`2c6716a`): el prompt de Testing juzga solo la
+     tarea en curso y nunca la suspende por trabajo de otra tarea, con un test
+     de regresión. En la ejecución 9 la revisión no se excedió, pero una sola
+     ejecución no basta para darlo por demostrado.
+9. **Ejecución 9** (`2c6716a`). Completada en unos 33 s, con tres tareas
+   aprobadas a la primera. Se grabó para el GIF del README
+   (`docs/media/ejecucion-completa.gif`, 37 fotogramas y unos 1,2 MB; el
+   codificador `gifenc` se instaló solo en el scratchpad, no en el proyecto).
+
+Queda 1 ejecución real de margen para hoy. No se forzó ningún fallo.
+
+### Capturas (`docs/screenshots/fase5-5/`)
+
+- `ejecucion8-rechazo-en-curso-escritorio.png`: el momento del rechazo.
+- `ejecucion8-alcance-reenvio-corregido-escritorio.png`: las tres
+  iteraciones de la tarea del formulario con sus informes.
+  - Iteración 1, con hallazgos de la revisión.
+  - Iteración 2, con `sin-cambios`, `alcance:app/contacto/page.tsx` y
+    `revision-anterior`.
+  - Iteración 3, aprobada.
+- `ejecucion8-alcance-reenvio-corregido-movil.png`: la misma ejecución a
+  390 px, sin scroll horizontal.
+- `ejecucion7-registro.txt` y `ejecucion8-registro.txt`: los registros
+  completos.
+
+## Fase 6 — Documentación final (2026-11-24)
+
+### Petición
+
+El usuario pidió:
+
+- Un README profesional: qué es, URL, capturas, GIF, diagrama Mermaid, stack,
+  ejecución en local, variables de entorno sin valores, decisiones, límites y
+  siguientes pasos.
+- `docs/ARQUITECTURA.md` al día.
+- `docs/PROCESO-CLAUDE-CODE.md`, basado en la bitácora y en git y sin inventar
+  nada.
+- Una revisión de secretos en todo el historial de git.
+
+### Hecho
+
+- **README** reescrito. Incluye el GIF de la ejecución 9, capturas de las
+  ejecuciones 8 y 6, la arquitectura en Mermaid, la tabla de variables (solo
+  nombres y para qué sirven), las decisiones técnicas, los límites conocidos y
+  los siguientes pasos que pidió el usuario: paralelizar tareas
+  independientes, ejecución real en sandbox, aprobación humana del plan y
+  métricas de coste.
+- **ARQUITECTURA.md** al día:
+  - estado de producción;
+  - archivos por tarea y alcance;
+  - barrera de entrega y convenciones;
+  - estructura real de carpetas;
+  - sección de despliegue;
+  - fuentes de Context7.
+
+  Se quitó la nota obsoleta de que Context7 no estaba disponible.
+- **PROCESO-CLAUDE-CODE.md** con fases, herramientas, prompts reales,
+  decisiones del usuario, problemas, errores propios y lecciones. Distingue
+  lo que consta de lo que no:
+  - No hay constancia de que se usara el MCP de Supabase.
+  - El uso del MCP de Playwright en la Fase 3 se deduce del `.gitignore`.
+  - No se usaron subagentes.
+
+### Revisión de secretos en el historial de git
+
+Se recorrió `git log --all -p` en todas las refs (36 commits en el momento de
+la revisión, 3 refs). En cada línea añadida o eliminada se buscaron estos
+patrones, imprimiendo solo el commit, el archivo y el tipo de coincidencia:
+
+- claves de Supabase (`sb_secret_`, y `sb_publishable_` que no fuera un
+  placeholder);
+- JWT (`eyJ…`);
+- claves de Google (`AIza…`) y de Groq (`gsk_…`);
+- URL de proyecto Supabase;
+- bloques de clave privada PEM.
+
+**Resultado: limpio.**
+
+- La única coincidencia es la cadena de prueba
+  `-----BEGIN RSA PRIVATE KEY-----` en `lib/validation/run-request.test.ts`
+  (`5ca0bf2`). Es la entrada de un test que comprueba que la app rechaza
+  credenciales pegadas, y no contiene material de clave.
+- Nunca se han versionado `.env.local`, `settings.local.json`,
+  `playwright/.auth`, `.vercel` ni archivos de sesión.
+- `.env.example` solo contiene placeholders.
+- Los archivos de sesión anónima que guardó `prod-run.mjs` estaban en el
+  scratchpad, fuera del repositorio, y se borraron.

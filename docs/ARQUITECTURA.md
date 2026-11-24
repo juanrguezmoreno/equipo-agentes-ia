@@ -1,8 +1,17 @@
-# Propuesta de arquitectura (Fase 0)
+# Arquitectura
 
-> Estado: propuesta de Fase 0 aprobada y actualizada con el diseño de la UI de
-> Fase 3 y la calidad de la Fase 4. La aplicación sigue sin desplegarse
-> públicamente.
+> Estado: implementada y desplegada en producción en
+> https://equipo-agentes-ia-gilt.vercel.app (Vercel Hobby y Supabase).
+>
+> El documento nació como la propuesta de la Fase 0 y se ha ido actualizando
+> con lo que se aprobó e implementó en cada fase:
+>
+> - UI (Fases 3 y 3.5);
+> - calidad (Fase 4);
+> - despliegue y convenciones de Testing (Fase 5);
+> - alcance de Develop y barrera de entrega (Fase 5.5).
+>
+> El historial de decisiones está en [BITACORA.md](BITACORA.md).
 
 ## Objetivo y límites
 
@@ -32,8 +41,9 @@ flowchart LR
   CLAIM --> DB
   API --> AGENT{Paso actual}
   AGENT -->|planificar| ORQ[Orquestador]
-  AGENT -->|implementar una tarea| DEV[Develop]
-  AGENT -->|validar una tarea| TEST[Testing]
+  AGENT -->|implementar una tarea| DEV[Develop<br/>solo archivos de su tarea]
+  AGENT -->|validar una tarea| GATE[Barrera de entrega<br/>alcance y reenvío idéntico]
+  GATE --> TEST[Testing<br/>checks deterministas y revisión]
   ORQ -->|plan Zod| DB
   DEV -->|artefactos versionados| DB
   TEST -->|informe estructurado| DB
@@ -59,16 +69,22 @@ exponencial acotado y jitter; no se mantiene una función dormida. El cliente
 reanuda cuando llega el momento. Agotados los reintentos de proveedor, el paso
 queda en error visible y recuperable, no en un estado de éxito aparente.
 Los endpoints exigen una sesión Supabase válida. `create_agent_run` limita a
-cinco runs por propietario y hora con un lock transaccional; es una protección
-básica por usuario, no una defensa completa contra creación masiva de cuentas.
+cinco runs por propietario y hora con un lock transaccional. Se complementa
+con:
+
+- los límites de la app por usuario y globales (ver «Rate limiting»);
+- el límite de 30 inicios de sesión anónimos por IP y hora configurado en
+  Supabase Auth.
 
 ## Modelo de datos propuesto
 
 - `runs`: `id`, `owner_id` (Supabase Auth), petición original, estado global,
   versión del esquema, `max_task_iterations`, marcas de tiempo y error final.
 - `agent_tasks`: `id`, `run_id`, orden, título, descripción, criterios legibles
-  y comprobaciones deterministas tipadas en `acceptance_criteria`, estado,
-  iteración actual/límite e informe de test más reciente.
+  y comprobaciones deterministas tipadas en `acceptance_criteria`
+  (`{criteria, checks}`), estado, iteración actual/límite e informe de test más
+  reciente. Los archivos que la tarea puede escribir se guardan como checks
+  `file_exists`; el alcance de la tarea es el conjunto de rutas de sus checks.
 - `artifacts`: `id`, `run_id`, `task_id`, ruta virtual, número de revisión,
   contenido de texto y autor. Inmutable por revisión; el conjunto de revisiones
   más recientes por ruta representa el proyecto virtual.
@@ -121,11 +137,10 @@ stateDiagram-v2
 ```
 
 Estados visibles de tarea: `pending`, `developing`, `testing`, `failed`,
-`completed`. Errores transitorios pueden mostrarse como subestado de actividad
-sin añadir un sexto estado al tablero. Si una tarea agota sus iteraciones o un
-paso termina en error no recuperable, el run falla y las tareas restantes quedan
+`completed`. Los errores transitorios se muestran como subestado de actividad
+(«Esperando reintento»). Si una tarea agota sus iteraciones o un paso termina
+en error no recuperable, el run falla y las tareas restantes quedan
 pendientes; así no se reporta el run como completado cuando una tarea falló.
-Esta política se propone para la implementación.
 
 Límite inicial: tres iteraciones Develop↔Testing por tarea, incluyendo la
 primera entrega de Develop. El valor se guarda en el run y no se cambia a mitad
@@ -149,25 +164,61 @@ para Groq, y no se inicia un proveedor si quedan menos de 8 s.
 
 ## Contratos de agentes y verificación
 
-Cada agente tiene prompt de sistema y esquema Zod propio:
+Cada agente tiene prompt de sistema y esquema Zod propio. Los tres reciben el
+contexto del proyecto (Next.js App Router con TypeScript) y la regla de escribir
+todo texto legible en el idioma de la petición.
 
-- **Plan**: lista acotada de tareas ordenadas, dependencias (si hacen falta),
-  criterios de aceptación legibles y aserciones verificables como archivo
-  requerido o texto/import/export requerido.
-- **Develop**: artefactos `{ path, content }` para el sistema de archivos virtual,
-  resumen del cambio y relación con criterios. Solo rutas relativas permitidas,
-  extensiones aprobadas y tamaños acotados.
+- **Plan**:
+  - de 1 a 4 tareas ordenadas (2–4 cuando hay varios entregables);
+  - dependencias si hacen falta;
+  - los archivos que puede escribir cada tarea (1–4);
+  - 2–4 criterios de aceptación verificables leyendo los archivos;
+  - 1–3 checks deterministas.
+
+  El servidor convierte los archivos declarados en checks `file_exists` y
+  alinea los checks de una tarea que nombran el mismo archivo en carpetas
+  distintas (`lib/agents/plan-consistency.ts`). Si repara algo, lo indica en el
+  resumen del plan.
+- **Develop**: artefactos `{ path, content }` para el sistema de archivos
+  virtual y resumen del cambio. Solo admite rutas relativas permitidas,
+  extensiones aprobadas y tamaños acotados. Recibe `allowedFiles` y el informe
+  de la iteración anterior. Los archivos fuera de su alcance no se guardan y se
+  registra un evento `scope_violation`.
 - **Testing**: resultado estructurado, comprobaciones ejecutadas, hallazgos y
-  decisión de revisión del modelo, incluyendo evidencia.
+  decisión de revisión del modelo, con evidencia. La revisión juzga solo la
+  tarea en curso, no el trabajo de las tareas siguientes.
 
 Las aserciones generadas por el Orquestador se validan y limitan en servidor.
-Testing parsea TypeScript/TSX con TypeScript `transpileModule` (sin ejecutar el
-código), JSON con `JSON.parse` y evalúa cada check (`file_exists`,
-`contains_text` o `exports_symbol`). Cualquier fallo determinista impide
-aprobar y evita gastar otra llamada al modelo. Si todos pasan, el LLM revisa el
-parche frente a petición y criterios. Un esquema Zod exige que tanto los checks
-como la revisión pasen para que el informe sea aprobado; el LLM no puede anular
-fallos deterministas ni producir por sí solo el estado `completed`.
+Un paso de Testing sigue este orden:
+
+1. **Barrera de entrega** (`lib/agents/delivery-gate.ts`), sin llamar al modelo.
+   - Las escrituras fuera de alcance de la iteración se reportan como
+     `alcance:<ruta>`.
+   - Si, tras un rechazo, todos los archivos entregados tienen el mismo SHA-256
+     que su revisión anterior, el informe se devuelve sin probar.
+     - Lleva el aviso `sin-cambios` y los fallos anteriores.
+     - Cuenta como iteración, porque para la máquina de estados es un rechazo
+       de Testing.
+
+   Los archivos de la entrega se identifican por la marca de tiempo del evento
+   `development_completed`, que comparten con sus artefactos al escribirse en
+   la misma transacción.
+2. **Comprobaciones deterministas**, sin ejecutar el código.
+   - Parseo de TypeScript/TSX (`transpileModule`) y JSON.
+   - Checks del plan.
+   - Convenciones (`lib/validation/conventions.ts`, sobre el AST):
+     - Next.js App Router: nada de `pages/`, export por defecto en
+       `page`/`layout`, `'use client'` con hooks o eventos, nada de `metadata`
+       en componentes de cliente.
+     - Accesibilidad: labels asociados, `required` cuando el label lo indica,
+       ids referenciados, `alt` y nombre de los botones.
+   - Las convenciones se aplican solo a los archivos cuya última revisión
+     escribió la tarea.
+3. **Revisión del modelo**, solo si todo lo anterior pasa.
+
+Un esquema Zod exige que tanto los checks como la revisión pasen para aprobar.
+El LLM no puede anular fallos deterministas ni producir por sí solo el estado
+`completed`.
 
 Los esquemas que se envían al proveedor son deliberadamente simples para
 mantenerse dentro del subconjunto de JSON Schema y los límites de complejidad
@@ -198,42 +249,53 @@ duración, y la UI muestra el último intento por agente. La salida de cada entr
 20 000 caracteres; el contexto virtual acumulado se limita a 20 archivos y
 48 000 caracteres para evitar prompts sin límite.
 
-## Estructura de carpetas propuesta
+## Estructura de carpetas
 
 ```text
 app/
-  api/runs/route.ts
-  api/runs/[runId]/step/route.ts
-  page.tsx
+  api/runs/route.ts              # crear ejecución: validación y rate limiting
+  api/runs/[runId]/step/route.ts # un paso: claim, agente, barrera, persistencia
+  layout.tsx, page.tsx, tokens.css, globals.css
 components/
-  dashboard.tsx            # estado de sesión, Realtime y avance de pasos
-  agent-identity.tsx       # nombre, rol e icono de cada agente
-  run-track.tsx            # estaciones de agentes y fichas de tareas
-  event-timeline.tsx
-  code-viewer.tsx
-  theme-toggle.tsx
+  dashboard.tsx      # sesión, Realtime, avance de pasos y avisos
+  run-track.tsx      # estaciones de agentes, fichas e informes por iteración
+  event-timeline.tsx, code-viewer.tsx, notice.tsx, agent-identity.tsx, theme-toggle.tsx
 lib/
-  agents/                 # prompts y esquemas Zod por agente
-  orchestration/           # transiciones puras y reglas de iteración
-  ai/                      # adaptador de proveedor y política de reintentos
-  supabase/                 # clientes server/browser y tipos DB
-  validation/               # validación del FS virtual
-supabase/
-  migrations/
-tests/
-  unit/
-  e2e/
-lib/**/*.test.ts           # pruebas Vitest actuales del núcleo
-docs/
-  ARQUITECTURA.md
-  BITACORA.md
-  PROCESO-CLAUDE-CODE.md
+  agents/            # prompts, esquemas Zod, plan-consistency, delivery-gate
+  ai/                # cadena de proveedores, errores, proveedor simulado
+  validation/        # FS virtual, convenciones Next.js/a11y, validación de la petición
+  rate-limit/        # política y conteo en Postgres
+  errors/, http/     # catálogo de mensajes y respuestas de error de la API
+  orchestration/     # backoff y reglas puras
+  dashboard/         # presentación de estados y eventos
+  supabase/          # clientes navegador/servidor/servicio
+supabase/migrations/ # esquema, RLS y RPC del workflow
+e2e/                 # Playwright: setup de sesión, flujos y backend simulado
+scripts/             # vitest.mjs, scan-client-bundle.mjs, prod-run.mjs, diagnose-gemini.ts
+docs/                # ARQUITECTURA, BITACORA, PROCESO-CLAUDE-CODE, capturas y GIF
 ```
 
 La ruta API no acepta instrucciones arbitrarias de agente desde el navegador.
-Las RPC de workflow y su migración correctiva ya están aplicadas al proyecto
-enlazado; el lint remoto no presenta errores. La UI en Fase 3 impulsará un paso
-cada vez.
+El navegador impulsa un paso cada vez; todas las migraciones están aplicadas al
+proyecto enlazado.
+
+## Despliegue
+
+- **Vercel Hobby.** Proyecto `equipo-agentes-ia`, que despliega
+  automáticamente cada push a `main` en la región `iad1`. Las variables de
+  producción se configuran en el panel de Vercel: allí no se definen
+  `RATE_LIMIT_*` ni `AI_MOCK_*`, así que se usan los límites por defecto, y
+  `AI_PROVIDER=mock` está bloqueado con `VERCEL_ENV=production`.
+- **Supabase.**
+  - Usa el proyecto existente con las migraciones de `supabase/migrations`.
+  - Anonymous Sign-Ins activado, con un límite de 30 por IP y hora.
+  - Site URL apuntando al dominio de producción. La app no usa redirecciones
+    de Auth, pero así no queda `localhost`.
+- **Verificación.**
+  - `scripts/scan-client-bundle.mjs` comprueba que el bundle del cliente no
+    contiene claves de servidor.
+  - `scripts/prod-run.mjs` lanza una ejecución real con Playwright y guarda el
+    registro y las capturas.
 
 ## Interfaz (Fase 3, rediseñada en la Fase 3.5)
 
@@ -340,14 +402,17 @@ hay límite por IP.
 con salidas deterministas que cumplen los checks del plan (`lib/ai/mock-model.ts`).
 Se niega a arrancar si `VERCEL_ENV=production`. Marcadores en la petición
 simulan fallos: `[simular:cuota]`, `[simular:caida]`, `[simular:timeout]`,
-`[simular:formato]` e `[simular:iteracion]`. Playwright (`e2e/`) construye la
+`[simular:formato]`, `[simular:iteracion]` y `[simular:alcance-y-reenvio]`. Este
+último hace que Develop escriba fuera de su tarea, reenvíe sin cambios y
+después lo corrija. Playwright (`e2e/`) construye la
 app, la arranca con el mock y nunca reutiliza un servidor existente, para no
 gastar cuota real. Del proyecto Supabase de `.env.local` usa:
 
 - Una sesión anónima por tanda, abierta en el proyecto `setup` y compartida
   mediante `storageState`.
-- Dos o tres runs reales: los del flujo principal y la iteración. Se quedan
-  por debajo del límite de 5 runs por propietario y hora.
+- Tres runs reales (cuatro con capturas): flujo principal, alcance y reenvío,
+  e iteración. Se quedan por debajo del límite de 5 runs por propietario y
+  hora.
 
 Los escenarios de fallo y de límite usan `e2e/fake-backend.ts`. Simula en el
 navegador la API, las lecturas PostgREST (mismas filas que escriben las RPC) y
@@ -363,7 +428,8 @@ un socket Realtime que nunca responde.
 | Acceso a datos de otros usuarios | Auth, RLS por `owner_id`, claves secretas solo en servidor y pruebas de políticas. |
 | Salida del modelo peligrosa o excesiva | Zod, allowlist de rutas, límites de tamaño y parser; no ejecutar el código generado. |
 | Criterios vagos | El plan contiene criterios legibles y aserciones deterministas tipadas; Testing devuelve evidencia. |
-| Coste/abuso en endpoint público | Límites de runs por usuario (hora y día) y globales, de pasos con modelo por usuario (minuto y día), de cuerpo/contexto/tokens e iteraciones. Falta protección por IP frente a la creación masiva de sesiones anónimas; el límite global la acota. |
+| Coste/abuso en endpoint público | Límites de runs por usuario (hora y día) y globales, de pasos con modelo por usuario (minuto y día), de cuerpo/contexto/tokens e iteraciones, y 30 inicios de sesión anónimos por IP y hora en Supabase Auth. |
+| Develop pisa archivos de otras tareas o repite entregas | Alcance por tarea: lo de fuera no se guarda y Testing lo reporta. Un reenvío idéntico tras un rechazo no se vuelve a probar. |
 | Realtime duplica o pierde eventos | Postgres como fuente de verdad, carga inicial, reconexión/refetch y eventos append-only. |
 | Modelo/proveedor deja de ser compatible | Adaptador separado y pruebas simuladas; secretos y selección por variables. |
 | Groq podría generar cargos en una cuenta con facturación | El fallback solo debe configurarse con cuenta Free sin método de pago; confirmar límites en consola y no asumir que las cuotas son ilimitadas. |
@@ -387,8 +453,13 @@ un socket Realtime que nunca responde.
 - [Groq: modelos y precios](https://console.groq.com/docs/models)
 - [Groq: rate limits](https://console.groq.com/docs/rate-limits)
 
-La búsqueda de herramientas de esta sesión no expuso Context7 ni los MCP de
-gestión de Supabase/Vercel. Estas referencias se consultaron directamente en
-documentación oficial disponible; antes de implementar se volverá a verificar
-la documentación y, si los MCP requeridos están disponibles, se utilizarán para
-las operaciones correspondientes.
+- [AI SDK: testing con `MockLanguageModelV4`](https://ai-sdk.dev/docs/ai-sdk-core/testing)
+- [Playwright: autenticación con proyecto `setup` y `storageState`](https://playwright.dev/docs/auth)
+- [Playwright: `webServer`](https://playwright.dev/docs/test-webserver)
+- [Playwright: `WebSocketRoute` (`routeWebSocket`)](https://playwright.dev/docs/api/class-websocketroute)
+
+En las Fases 0–3 (hechas con GitHub Copilot) Context7 y los MCP de Supabase y
+Vercel no estaban disponibles y se consultó la documentación oficial
+directamente. Desde que se usa Claude Code, la documentación de librerías se
+consulta con Context7 y el despliegue se revisa con el MCP de Vercel (ver
+[PROCESO-CLAUDE-CODE.md](PROCESO-CLAUDE-CODE.md)).
