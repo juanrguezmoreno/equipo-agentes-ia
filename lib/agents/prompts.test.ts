@@ -73,6 +73,9 @@ describe("agent prompts", () => {
     expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain("2 to 4 per task");
     expect(ORCHESTRATOR_SYSTEM_PROMPT).toMatch(/verifiable by reading the files/);
     expect(ORCHESTRATOR_SYSTEM_PROMPT).not.toContain("Prefer a single task");
+    // Regression: a real run planned page + form + data as one task.
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain("most requests need 2 to 4 tasks");
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toMatch(/Example: "a contact page[^]*\(3\) the route app\/contacto\/page\.tsx/);
   });
 
   it("describe the App Router project to every agent", () => {

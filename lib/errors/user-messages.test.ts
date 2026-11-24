@@ -206,21 +206,21 @@ describe("describeEventSummary", () => {
       "Plan de tareas",
     );
     expect(
-      describeEventSummary(step("develop", `task:${tasks[0].id}:develop:0`, "Implement task 1."), tasks),
+      describeEventSummary(step("develop", `task:${tasks[0].id}:develop:1`, "Implement task 1."), tasks),
     ).toBe("Formulario de contacto");
     expect(
-      describeEventSummary(step("testing", `task:${tasks[0].id}:test:1`, "Test task 1."), tasks),
+      describeEventSummary(step("testing", `task:${tasks[0].id}:test:2`, "Test task 1."), tasks),
     ).toBe("Formulario de contacto (iteración 2)");
     // Without the task list the stored text is kept rather than guessed.
     expect(
-      describeEventSummary(step("develop", `task:${tasks[0].id}:develop:0`, "Implement task 1.")),
+      describeEventSummary(step("develop", `task:${tasks[0].id}:develop:1`, "Implement task 1.")),
     ).toBeNull();
   });
 
   it("translates system summaries written by the RPCs", () => {
     expect(
       describeEventSummary(
-        event({ event_type: "run_created", agent: "system", output_summary: "A new agent run was created." }),
+        event({ event_type: "run_created", agent: "system", input_summary: "A new agent run was created." }),
       ),
     ).toBe("El Orquestador recibió la petición.");
     expect(

@@ -408,7 +408,11 @@ const systemSummaries: Record<string, string> = {
     "Testing rechazó la tarea en todas las iteraciones permitidas.",
 };
 
-/** Iteration encoded in a step key such as "task:<id>:develop:1" (0-based). */
+/**
+ * Iteration encoded in a step key such as "task:<id>:develop:1". The RPC
+ * writes the task's iteration_count, which is already 1 for the first try
+ * (verified against a real run: the first Develop step carries ":develop:1").
+ */
 function getStepIteration(event: AgentEvent): number | null {
   const metadata = event.metadata;
   if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
@@ -416,7 +420,7 @@ function getStepIteration(event: AgentEvent): number | null {
   }
   const match =
     typeof metadata.stepKey === "string" ? /:(\d+)$/.exec(metadata.stepKey) : null;
-  return match ? Number(match[1]) + 1 : null;
+  return match ? Number(match[1]) : null;
 }
 
 /**
@@ -450,8 +454,14 @@ export function describeEventSummary(
     const iteration = getStepIteration(event);
     return iteration && iteration > 1 ? `${task.title} (iteración ${iteration})` : task.title;
   }
-  const stored = event.output_summary?.trim() ?? "";
-  return systemSummaries[stored] ?? null;
+  // run_created stores its text in input_summary, the others in output_summary.
+  for (const stored of [event.output_summary, event.input_summary]) {
+    const translated = stored ? systemSummaries[stored.trim()] : undefined;
+    if (translated) {
+      return translated;
+    }
+  }
+  return null;
 }
 
 /** Maps an exception thrown by `fetch` (or our own parsing) to a message. */
