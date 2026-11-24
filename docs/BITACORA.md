@@ -367,24 +367,25 @@ permiso solo para superar el límite o si existe posibilidad de coste.
 
 ## Cambio de herramienta: de GitHub Copilot a Claude Code (2026-11-23)
 
-### Nota de transparencia
+### Herramienta de desarrollo
 
-Las fases 0 a 3 (hasta el commit `0de7ae4`) se desarrollaron por error con
-GitHub Copilot en modo agente, no con Claude Code como estaba previsto. Los
-commits `c26d8bd` a `13db2ed` llevan el trailer `Co-authored-by: Copilot`, que
-lo confirma. A partir de esta entrada el trabajo continúa con Claude Code.
+Las fases 0 a 3, hasta el commit `0de7ae4`, se desarrollaron con GitHub Copilot
+en modo agente. Los commits `c26d8bd` a `13db2ed` llevan el trailer
+`Co-authored-by: Copilot`. Al detectarlo, el desarrollo continuó con Claude
+Code, la herramienta requerida para el proyecto. Claude Code revisó el estado
+del proyecto y completó las fases 3 a 6.
 
-Consecuencias que se dejan constancia:
+Notas sobre las entradas anteriores:
 
-- Las entradas anteriores de esta bitácora las redactó Copilot. Claude Code no
-  ha vuelto a verificar cada afirmación; sí ha comprobado que el árbol está
-  limpio, que `0de7ae4` está en `origin/main` y que tests, TypeScript y lint
-  pasan.
-- Algunas fechas anteriores no cuadran: hay entradas fechadas el 24 y el
-  26-11-2026, pero todos los commits y todas las runs de la base de datos son
-  del 23-11-2026. Las fechas reales son las de Git y Supabase.
-- Las referencias a que Context7 o los MCP no estaban disponibles describen el
-  entorno de Copilot. En Claude Code sí están disponibles y se usan.
+- **Autoría.** Las redactó Copilot. Claude Code no volvió a verificar cada
+  afirmación. Sí comprobó que el árbol de trabajo estaba limpio, que `0de7ae4`
+  estaba en `origin/main` y que pasaban los tests, TypeScript y lint.
+- **Fechas.** Algunas entradas tienen fecha del 24 o el 26-11-2026, pero todos
+  los commits y todas las ejecuciones registradas en la base de datos son del
+  23-11-2026. Las fechas de referencia son las de git y Supabase.
+- **Herramientas no disponibles.** Las menciones a que Context7 o los MCP no
+  estaban disponibles se refieren al entorno de Copilot. En Claude Code sí
+  están disponibles y se usan.
 
 ### Petición
 

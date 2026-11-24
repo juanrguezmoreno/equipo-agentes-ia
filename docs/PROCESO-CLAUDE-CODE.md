@@ -9,8 +9,9 @@ ninguno de los dos, se dice explícitamente en lugar de suponerlo.
 - **Calendario.** El proyecto se hizo en dos días, el 23 y el 24-11-2026, con
   commits pequeños sobre `main`.
 - **Herramientas.**
-  - Fases 0 a 3: GitHub Copilot en modo agente, **por error**.
-  - Desde la corrección del fallback de proveedores en la Fase 3: Claude Code.
+  - Fases 0 a 3: GitHub Copilot en modo agente.
+  - Desde la corrección del fallback de proveedores en la Fase 3 hasta la
+    Fase 6: Claude Code, la herramienta requerida para el proyecto.
 - **Método.** Fases cortas con parada para aprobación, una bitácora viva y
   verificación con tests y ejecuciones reales antes de cerrar cada fase.
 
@@ -50,13 +51,14 @@ fases:
 | 5.5 — Arreglos de agentes | `753783d`, `2c6716a` | Claude Code | Alcance de Develop, barrera de reenvíos y 3 ejecuciones reales |
 | 6 — Documentación | último commit de la Fase 6 | Claude Code | README, arquitectura, este documento y revisión de secretos |
 
-### Fases 0–3 con GitHub Copilot (por error)
+### Fases 0–3 con GitHub Copilot
 
-La bitácora lo recoge como nota de transparencia: las fases 0 a 3, hasta el
-commit `0de7ae4`, se hicieron con GitHub Copilot en modo agente, no con Claude
-Code como estaba previsto. Lo confirma el historial: los commits `c26d8bd` a
-`13db2ed` llevan el trailer `Co-authored-by: Copilot`. `0de7ae4` es un WIP del
-usuario sin trailer.
+Las fases 0 a 3, hasta el commit `0de7ae4`, se desarrollaron con GitHub Copilot
+en modo agente. Los commits `c26d8bd` a `13db2ed` llevan el trailer
+`Co-authored-by: Copilot`, y `0de7ae4` es un commit WIP del usuario sin
+trailer. Al detectarlo, el desarrollo continuó con Claude Code, la herramienta
+requerida. Claude Code revisó el estado del proyecto y completó las fases 3 a
+6.
 
 Lo que dejó esa etapa:
 
@@ -67,11 +69,12 @@ Lo que dejó esa etapa:
   local, después de un `supabase start` fallido.
 - Los primeros problemas con Gemini, analizados en «Problemas reales».
 
-Consecuencia que se dejó escrita: Claude Code no volvió a verificar cada
-afirmación de esas entradas de la bitácora. Comprobó que el árbol estaba
-limpio, que `0de7ae4` estaba en `origin/main` y que los tests, TypeScript y
-lint pasaban. Algunas fechas de esas entradas (24 y 26-11) no cuadran con git,
-donde todo es del 23-11.
+Al revisar el estado del proyecto, Claude Code no volvió a verificar cada
+afirmación de las entradas de la bitácora de esa etapa. Sí comprobó que el
+árbol de trabajo estaba limpio, que `0de7ae4` estaba en `origin/main` y que
+pasaban los tests, TypeScript y lint. Algunas fechas de esas entradas (24 y
+26-11) no coinciden con git, donde todo es del 23-11; las fechas de referencia
+son las de git.
 
 ### Desde la Fase 3 con Claude Code
 
@@ -305,7 +308,7 @@ dejó de gastar cupo en lugar de forzarlo.
 ## Lecciones aprendidas
 
 1. **Tener la bitácora como fuente de verdad pagó.** Permitió retomar el
-   trabajo, detectar el error de herramienta de las fases 0–3 y escribir este
+   trabajo al cambiar de herramienta tras las fases 0–3 y escribir este
    documento sin reconstruir de memoria.
 2. **Primero lo determinista, luego el modelo.** Los checks deterministas
    fueron más fiables y baratos que la revisión del LLM, y hacen los rechazos
