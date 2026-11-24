@@ -108,10 +108,11 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   const projectFiles: Record<string, string> = {};
+  const taskFilePaths: string[] = [];
   if (claim.data.agent !== "orchestrator") {
     const { data: artifacts, error: artifactsError } = await admin
       .from("artifacts")
-      .select("path, revision, content")
+      .select("path, revision, content, task_id")
       .eq("run_id", parsedRunId.data)
       .order("path", { ascending: true })
       .order("revision", { ascending: false });
@@ -136,6 +137,10 @@ export async function POST(_request: Request, { params }: RouteContext) {
     for (const artifact of artifacts) {
       if (!(artifact.path in projectFiles)) {
         projectFiles[artifact.path] = artifact.content;
+        // Latest revision first: these are the files this task last wrote.
+        if (artifact.task_id && artifact.task_id === claim.data.task?.id) {
+          taskFilePaths.push(artifact.path);
+        }
       }
     }
 
@@ -223,6 +228,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
             acceptanceCriteria: task.acceptanceCriteria,
           },
           projectFiles,
+          taskFilePaths,
         }, undefined, generationOptions);
         break;
       }

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { runConventionChecks } from "./conventions";
 import type {
   AcceptanceCheck,
   DeterministicCheckResult,
@@ -9,9 +10,19 @@ export interface VirtualFile {
   content: string;
 }
 
+export interface DeterministicCheckOptions {
+  /**
+   * Paths whose convention checks (Next.js and accessibility) apply. Testing
+   * passes the files written by the task under test, so a problem in another
+   * task's file does not block this one. Defaults to every file.
+   */
+  conventionPaths?: readonly string[];
+}
+
 export function runDeterministicChecks(
   files: readonly VirtualFile[],
   acceptanceChecks: readonly AcceptanceCheck[],
+  options: DeterministicCheckOptions = {},
 ): DeterministicCheckResult[] {
   const fileMap = new Map(files.map((file) => [file.path, file.content]));
   const results: DeterministicCheckResult[] = [];
@@ -41,7 +52,7 @@ export function runDeterministicChecks(
         results.push({
           name: `syntax:${file.path}`,
           passed: false,
-          details: "File is not valid JSON.",
+          details: `${file.path} no es JSON válido.`,
         });
       }
     }
@@ -56,8 +67,8 @@ export function runDeterministicChecks(
           passed: content !== undefined,
           details:
             content === undefined
-              ? `Required file ${check.path} is missing.`
-              : `Required file ${check.path} exists.`,
+              ? `Falta el archivo obligatorio ${check.path}.`
+              : `Existe el archivo obligatorio ${check.path}.`,
         });
         break;
 
@@ -67,8 +78,8 @@ export function runDeterministicChecks(
           passed: content?.includes(check.text) ?? false,
           details:
             content?.includes(check.text) === true
-              ? `Required text was found in ${check.path}.`
-              : `Required text was not found in ${check.path}.`,
+              ? `${check.path} contiene el texto requerido «${check.text}».`
+              : `${check.path} no contiene el texto requerido «${check.text}».`,
         });
         break;
 
@@ -81,13 +92,18 @@ export function runDeterministicChecks(
           name: `exports_symbol:${check.path}:${check.symbol}`,
           passed,
           details: passed
-            ? `${check.path} exports ${check.symbol}.`
-            : `${check.path} does not export ${check.symbol}.`,
+            ? `${check.path} exporta ${check.symbol}.`
+            : `${check.path} no exporta ${check.symbol}.`,
         });
         break;
       }
     }
   }
+
+  const scope = options.conventionPaths ? new Set(options.conventionPaths) : null;
+  results.push(
+    ...runConventionChecks(files.filter((file) => !scope || scope.has(file.path))),
+  );
 
   return results;
 }
@@ -104,7 +120,7 @@ function formatDiagnostic(diagnostic: ts.Diagnostic): string {
 
   return line === undefined
     ? message
-    : `Line ${line}: ${message}`;
+    : `Línea ${line}: ${message}`;
 }
 
 function exportsSymbol(

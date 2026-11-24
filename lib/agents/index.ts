@@ -35,7 +35,8 @@ export interface AgentGenerationOptions {
 
 const DEFAULT_GENERATION_OPTIONS: AgentGenerationOptions = { budgetMs: 45_000 };
 
-const MAX_PLAN_OUTPUT_TOKENS = 1800;
+// Room for up to 4 tasks with 2–4 criteria and checks each.
+const MAX_PLAN_OUTPUT_TOKENS = 2600;
 const MAX_DEVELOP_OUTPUT_TOKENS = 5000;
 const MAX_REVIEW_OUTPUT_TOKENS = 1800;
 
@@ -131,10 +132,14 @@ export async function runTestingReview(
 }
 
 export async function runTesting(
-  input: Omit<TestingAgentInput, "deterministicChecks">,
+  input: Omit<TestingAgentInput, "deterministicChecks"> & {
+    /** Files written by this task; convention checks apply only to them. */
+    taskFilePaths?: readonly string[];
+  },
   generate: StructuredGenerator = generateStructuredOutput,
   generationOptions: AgentGenerationOptions = DEFAULT_GENERATION_OPTIONS,
 ): Promise<TestReport> {
+  const { taskFilePaths, ...reviewInput } = input;
   const files = Object.entries(input.projectFiles).map(([path, content]) => ({
     path,
     content,
@@ -142,20 +147,24 @@ export async function runTesting(
   const deterministicChecks = runDeterministicChecks(
     files,
     input.task.acceptanceCriteria.checks,
+    { conventionPaths: taskFilePaths },
   );
   const failedChecks = deterministicChecks.filter((check) => !check.passed);
 
   if (failedChecks.length > 0) {
     return TestReportSchema.parse({
       passed: false,
-      summary: `Testing blocked: ${failedChecks.length} deterministic check(s) failed.`,
+      summary:
+        failedChecks.length === 1
+          ? `Testing bloqueó la entrega: falló 1 comprobación determinista (${failedChecks[0].name}).`
+          : `Testing bloqueó la entrega: fallaron ${failedChecks.length} comprobaciones deterministas.`,
       deterministicChecks,
       review: null,
     });
   }
 
   const review = await runTestingReview(
-    { ...input, deterministicChecks },
+    { ...reviewInput, deterministicChecks },
     generate,
     generationOptions,
   );
