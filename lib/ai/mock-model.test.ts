@@ -32,7 +32,7 @@ async function runWholeTask(request: string, attempts: ProviderAttemptRecord[] =
     const development = await runDevelop(
       {
         userRequest: request,
-        task: { ...task, acceptanceCriteria, iteration, previousTestReport: reports.at(-1) ?? null },
+        task: { ...task, acceptanceCriteria, iteration, previousTestReport: reports.at(-1) ?? null, allowedFiles: task.files },
         projectFiles: files,
       },
       undefined,
@@ -80,7 +80,7 @@ describe("mock provider", () => {
     const development = await runDevelop(
       {
         userRequest: "demo",
-        task: { ...task, acceptanceCriteria, iteration: 1, previousTestReport: null },
+        task: { ...task, acceptanceCriteria, iteration: 1, previousTestReport: null, allowedFiles: task.files },
         projectFiles: {},
       },
       undefined,

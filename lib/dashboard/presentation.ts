@@ -46,6 +46,7 @@ const eventLabels: Record<string, string> = {
   run_completed: "Ejecución completada",
   agent_failed: "Agente con error",
   workflow_failed: "Flujo detenido",
+  scope_violation: "Escritura fuera de alcance",
 };
 
 export function getAgentPresentation(

@@ -14,9 +14,19 @@ import { MOCK_MODEL_ID } from "./model-config";
  *   [simular:formato]    the model returns malformed JSON
  *   [simular:iteracion]  Develop misses a criterion on its first iteration,
  *                        so Testing rejects it once
+ *   [simular:alcance-y-reenvio]  on the README task, Develop also writes a
+ *                        file outside its scope (iteration 1), resends the
+ *                        same README unchanged (iteration 2) and fixes it (3)
  */
 
-export type MockScenario = "ok" | "quota" | "outage" | "timeout" | "malformed" | "iterate";
+export type MockScenario =
+  | "ok"
+  | "quota"
+  | "outage"
+  | "timeout"
+  | "malformed"
+  | "iterate"
+  | "scope-resend";
 
 const SCENARIO_MARKERS: Array<[string, MockScenario]> = [
   ["[simular:cuota]", "quota"],
@@ -24,6 +34,7 @@ const SCENARIO_MARKERS: Array<[string, MockScenario]> = [
   ["[simular:timeout]", "timeout"],
   ["[simular:formato]", "malformed"],
   ["[simular:iteracion]", "iterate"],
+  ["[simular:alcance-y-reenvio]", "scope-resend"],
 ];
 
 export function detectScenario(text: string): MockScenario {
@@ -60,6 +71,7 @@ const DEMO_PLAN = {
         { type: "file_exists", path: "README.md", value: "" },
         { type: "contains_text", path: "README.md", value: "## Resumen" },
       ],
+      files: ["README.md"],
       dependsOn: [],
     },
     {
@@ -69,6 +81,7 @@ const DEMO_PLAN = {
       checks: [
         { type: "exports_symbol", path: "src/version.ts", value: "APP_VERSION" },
       ],
+      files: ["src/version.ts"],
       dependsOn: [1],
     },
   ],
@@ -103,7 +116,11 @@ function developOutput(input: unknown, scenario: MockScenario) {
     task?: { iteration?: number; acceptanceCriteria?: { checks?: MockCheck[] } };
   };
   const checks = data.task?.acceptanceCriteria?.checks ?? [];
-  const omitText = scenario === "iterate" && (data.task?.iteration ?? 1) === 1;
+  const iteration = data.task?.iteration ?? 1;
+  const isReadmeTask = checks.some((check) => check.path === "README.md");
+  const scopeResend = scenario === "scope-resend" && isReadmeTask;
+  const omitText =
+    (scenario === "iterate" && iteration === 1) || (scopeResend && iteration < 3);
   const byPath = new Map<string, MockCheck[]>();
   for (const check of checks) {
     byPath.set(check.path, [...(byPath.get(check.path) ?? []), check]);
@@ -111,14 +128,18 @@ function developOutput(input: unknown, scenario: MockScenario) {
   if (byPath.size === 0) {
     byPath.set("README.md", []);
   }
+  const files = [...byPath].slice(0, 4).map(([path, fileChecks]) => ({
+    path,
+    content: buildFile(path, fileChecks, omitText),
+  }));
+  if (scopeResend && iteration === 1) {
+    files.push({ path: "src/fuera-de-alcance.ts", content: "export const extra = true;\n" });
+  }
   return {
     summary: omitText
       ? "Primera versión simulada (incompleta a propósito)."
       : "Archivos simulados que cumplen los criterios de la tarea.",
-    files: [...byPath].slice(0, 4).map(([path, fileChecks]) => ({
-      path,
-      content: buildFile(path, fileChecks, omitText),
-    })),
+    files,
   };
 }
 

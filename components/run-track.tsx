@@ -165,14 +165,19 @@ function DoneStation({ run, tasks }: { run: Run | null; tasks: Task[] }) {
 
 function TestReport({
   event,
+  ordinal,
   initiallyOpen,
   fallbackReport,
 }: {
   event: AgentEvent;
+  /** 1-based position among the task's reports: one report per iteration. */
+  ordinal: number;
   initiallyOpen: boolean;
   fallbackReport: ReturnType<typeof getLatestTestReport>;
 }) {
-  const iteration = getTestIteration(event);
+  // The stored iteration is off by one for a rejection at max - 1 (the RPC
+  // compares the already incremented counter), so the order is used instead.
+  const iteration = { ...getTestIteration(event), iteration: ordinal };
   const report = iteration.report ?? fallbackReport;
   const checks = report?.deterministicChecks ?? [];
   const findings = report?.review?.findings ?? [];
@@ -252,7 +257,7 @@ function TaskLane({
         (event.event_type === "testing_passed" ||
           event.event_type === "testing_failed"),
     )
-    .sort((left, right) => left.created_at.localeCompare(right.created_at));
+    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id - right.id);
   const legacyReport = getLatestTestReport(task);
   const thinking =
     live && (task.status === "developing" || task.status === "testing");
@@ -333,6 +338,7 @@ function TaskLane({
                 {testEvents.map((event, index) => (
                   <TestReport
                     event={event}
+                    ordinal={index + 1}
                     fallbackReport={
                       index === testEvents.length - 1 ? legacyReport : null
                     }

@@ -18,6 +18,7 @@ const RUN_4_TASK = {
       symbol: "ContactForm",
     },
   ],
+  files: ["app/contacto/_components/ContactForm.tsx"],
   dependsOn: [],
 };
 

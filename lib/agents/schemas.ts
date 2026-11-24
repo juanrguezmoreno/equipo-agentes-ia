@@ -67,9 +67,19 @@ export const PlannedTaskSchema = z
       .min(1)
       .max(6),
     checks: z.array(AcceptanceCheckSchema).min(1).max(8),
+    /**
+     * Files this task may create or modify. Develop may write only these.
+     * Persisted as file_exists checks (see runOrchestrator), so the task's
+     * scope is the set of paths its checks name.
+     */
+    files: z.array(VirtualPathSchema).min(1).max(MAX_FILES_PER_DEVELOPMENT),
     dependsOn: z.array(z.number().int().positive().max(MAX_TASKS_PER_RUN)).max(4),
   })
-  .strict();
+  .strict()
+  .refine((task) => new Set(task.files).size === task.files.length, {
+    message: "Each file may be listed once per task",
+    path: ["files"],
+  });
 
 export const PlanSchema = z
   .object({
@@ -148,6 +158,7 @@ export const PlanGenerationSchema = z.object({
           value: z.string(),
         }).strict(),
       ),
+      files: z.array(z.string()),
       dependsOn: z.array(z.number()),
     }).strict(),
   ),

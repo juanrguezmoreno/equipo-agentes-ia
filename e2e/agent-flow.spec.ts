@@ -121,6 +121,32 @@ test.describe("flujo principal", () => {
     expect(afterReload.filter(Boolean)).toEqual([]);
   });
 
+  // Real pipeline (API → RPC → delivery gate) with the mock model: Develop
+  // writes outside its task, then resends the same README, then fixes it.
+  test("alcance de Develop y reenvíos idénticos", async ({ page }) => {
+    await openDashboard(page);
+    const request = "Crea un README para la demo [simular:alcance-y-reenvio]";
+    await submitRequest(page, request);
+    await waitForCompletion(page, request);
+
+    const log = page.getByRole("log");
+    // Iteration 1: the extra file was never stored and Testing reported it.
+    await expect(log).toContainText("Escritura fuera de alcance");
+    await expect(log).toContainText("src/fuera-de-alcance.ts. No se guardó.");
+    await expect(page.getByLabel("Archivo y revisión")).not.toContainText("fuera-de-alcance");
+    // Iteration 2: the unchanged README was returned without being tested.
+    await expect(log).toContainText(
+      "Develop reenvió los mismos archivos tras el rechazo; no se enviaron a Testing.",
+    );
+    // Iteration 3: fixed and approved; the resend counted as an iteration.
+    const readmeLane = page.getByRole("list", { name: "Tareas" }).locator(":scope > li").first();
+    await expect(readmeLane.locator(".lane-iteration")).toHaveText("Iteración 3 de 3");
+    await readmeLane.locator("summary").first().click();
+    await readmeLane.getByText("Iteración 2", { exact: true }).click();
+    await expect(readmeLane).toContainText("sin-cambios:README.md");
+    await expect(readmeLane).toContainText("alcance:src/fuera-de-alcance.ts");
+  });
+
   test("Testing rechaza una iteración y Develop la corrige", async ({ page }) => {
     await openDashboard(page);
     const request = "Crea un README para la demo [simular:iteracion]";

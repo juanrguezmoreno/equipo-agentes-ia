@@ -16,6 +16,7 @@ const plan: Plan = {
           symbol: "default",
         },
       ],
+      files: ["app/contact/page.tsx"],
       dependsOn: [],
     },
   ],
@@ -42,9 +43,16 @@ describe("agent execution with a simulated model", () => {
   it("validates the Orchestrator response against its plan schema", async () => {
     const generate = vi.fn(async () => generatedPlan);
 
+    // Declared files are stored as leading file_exists checks (task scope).
     await expect(
       runOrchestrator("Add a contact page.", generate),
-    ).resolves.toEqual(plan);
+    ).resolves.toEqual({
+      ...plan,
+      tasks: plan.tasks.map((task) => ({
+        ...task,
+        checks: [{ type: "file_exists", path: "app/contact/page.tsx" }, ...task.checks],
+      })),
+    });
     expect(generate).toHaveBeenCalledOnce();
   });
 
@@ -92,6 +100,7 @@ describe("agent execution with a simulated model", () => {
             },
             iteration: 1,
             previousTestReport: null,
+            allowedFiles: ["app/contact/page.tsx"],
           },
           projectFiles: {},
         },

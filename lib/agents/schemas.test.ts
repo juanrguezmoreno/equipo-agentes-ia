@@ -19,6 +19,7 @@ const validPlan: Plan = {
           path: "app/contact/page.tsx",
         },
       ],
+      files: ["app/contact/page.tsx"],
       dependsOn: [],
     },
     {
@@ -32,6 +33,7 @@ const validPlan: Plan = {
           symbol: "default",
         },
       ],
+      files: ["app/contact/page.tsx"],
       dependsOn: [1],
     },
   ],

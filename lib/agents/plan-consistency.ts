@@ -18,8 +18,9 @@ function basename(path: string): string {
  * identical, correct iterations.
  *
  * The repair is deliberately narrow: only same-name files within one task,
- * aligned to the path that a file_exists check names (or, failing that, the
- * most used one). Everything else is left to schema validation and Testing.
+ * aligned to the path the task declares in `files`, else the one a
+ * file_exists check names, else the most used one. Everything else is left
+ * to schema validation and Testing.
  */
 export function alignCheckPaths(plan: Plan): { plan: Plan; repairs: PathRepair[] } {
   const repairs: PathRepair[] = [];
@@ -33,9 +34,11 @@ export function alignCheckPaths(plan: Plan): { plan: Plan; repairs: PathRepair[]
     const target = new Map<string, string>();
     for (const [name, paths] of byName) {
       if (new Set(paths).size < 2) continue;
-      const declared = task.checks.find(
-        (check) => check.type === "file_exists" && basename(check.path) === name,
-      )?.path;
+      const declared =
+        task.files.find((file) => basename(file) === name) ??
+        task.checks.find(
+          (check) => check.type === "file_exists" && basename(check.path) === name,
+        )?.path;
       const counts = new Map<string, number>();
       for (const path of paths) counts.set(path, (counts.get(path) ?? 0) + 1);
       const mostUsed = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];

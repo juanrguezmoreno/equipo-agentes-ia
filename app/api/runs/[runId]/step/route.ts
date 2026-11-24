@@ -9,11 +9,17 @@ import type { ProviderAttemptRecord } from "@/lib/ai/provider-attempt";
 import {
   ClaimedStepSchema,
   MAX_FILE_CONTENT_CHARS,
+  MAX_FILES_PER_DEVELOPMENT,
   MAX_FILES_PER_PROJECT,
   MAX_PROJECT_CONTEXT_CHARS,
   StepClaimResponseSchema,
 } from "@/lib/agents/schemas";
 import { providerLabel } from "@/lib/ai/provider-label";
+import {
+  splitByScope,
+  taskScope,
+  type DeliveryGateInput,
+} from "@/lib/agents/delivery-gate";
 import { apiError } from "@/lib/http/api-error";
 import { retryDelayMs } from "@/lib/orchestration/state-machine";
 import { checkStepLimit } from "@/lib/rate-limit/check";
@@ -109,10 +115,11 @@ export async function POST(_request: Request, { params }: RouteContext) {
 
   const projectFiles: Record<string, string> = {};
   const taskFilePaths: string[] = [];
+  let allArtifacts: ArtifactRow[] = [];
   if (claim.data.agent !== "orchestrator") {
     const { data: artifacts, error: artifactsError } = await admin
       .from("artifacts")
-      .select("path, revision, content, task_id")
+      .select("path, revision, content, task_id, created_at")
       .eq("run_id", parsedRunId.data)
       .order("path", { ascending: true })
       .order("revision", { ascending: false });
@@ -134,6 +141,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
       );
     }
 
+    allArtifacts = artifacts;
     for (const artifact of artifacts) {
       if (!(artifact.path in projectFiles)) {
         projectFiles[artifact.path] = artifact.content;
@@ -165,6 +173,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   let result: Json;
+  let scopeViolation: { paths: string[]; iteration: number } | null = null;
   const providerAttempts: ProviderAttemptRecord[] = [];
   const generationOptions: AgentGenerationOptions = {
     budgetMs: MODEL_BUDGET_MS - (Date.now() - requestStartedAt),
@@ -190,6 +199,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
         break;
       case "develop": {
         const task = requireTask(claim.data);
+        const scope = taskScope(task.acceptanceCriteria);
         const development = await runDevelop({
           userRequest: claim.data.request,
           task: {
@@ -198,11 +208,36 @@ export async function POST(_request: Request, { params }: RouteContext) {
             acceptanceCriteria: task.acceptanceCriteria,
             iteration: task.iteration,
             previousTestReport: task.previousTestReport,
+            allowedFiles: scope,
           },
           projectFiles,
         }, undefined, generationOptions);
+        // Develop may only write its task's files: anything else is never
+        // stored, and Testing reports it (see delivery-gate.ts).
+        const { allowed, outside } = splitByScope(development.files, scope);
+        let files = allowed;
+        if (outside.length > 0) {
+          scopeViolation = { paths: outside.map((file) => file.path), iteration: task.iteration };
+        }
+        if (files.length === 0) {
+          // The state machine needs a delivery to move on to Testing: resend
+          // the task's current files unchanged so the violation is reported
+          // and counted as an iteration.
+          files = scope
+            .filter((path) => path in projectFiles)
+            .slice(0, MAX_FILES_PER_DEVELOPMENT)
+            .map((path) => ({ path, content: projectFiles[path] }));
+        }
+        if (files.length === 0) {
+          await recordProviderAttempts(admin, providerEventContext, providerAttempts);
+          return recordFailure(admin, claim.data.attemptId, claim.data.attemptNumber, {
+            code: "develop_out_of_scope",
+            retryable: true,
+            summary: "Develop only proposed files outside its task.",
+          });
+        }
         if (
-          exceedsProjectLimits(projectFiles, development.files)
+          exceedsProjectLimits(projectFiles, files)
         ) {
           return recordFailure(
             admin,
@@ -215,7 +250,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
             },
           );
         }
-        result = development;
+        result = { ...development, files };
         break;
       }
       case "testing": {
@@ -229,6 +264,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
           },
           projectFiles,
           taskFilePaths,
+          deliveryGate: await loadDeliveryGateInput(admin, task, allArtifacts),
         }, undefined, generationOptions);
         break;
       }
@@ -274,6 +310,21 @@ export async function POST(_request: Request, { params }: RouteContext) {
       attemptId: claim.data.attemptId,
     });
     return apiError("step_persist_failed", 500);
+  }
+
+  if (scopeViolation) {
+    const { error } = await admin.from("agent_events").insert({
+      run_id: parsedRunId.data,
+      task_id: claim.data.task?.id ?? null,
+      agent: "develop",
+      event_type: "scope_violation",
+      output_summary:
+        `Develop intentó escribir fuera de su tarea: ${scopeViolation.paths.join(", ")}. No se guardó.`.slice(0, 4000),
+      metadata: { paths: scopeViolation.paths, iteration: scopeViolation.iteration },
+    });
+    if (error) {
+      console.error("Could not record scope violation.", { code: error.code, runId: parsedRunId.data });
+    }
   }
 
   return Response.json({ status: "step_completed", completion });
@@ -365,6 +416,65 @@ async function onlyFinalizationRemains(
     tasks.length > 0 &&
     tasks.every((task) => task.status === "completed")
   );
+}
+
+type ArtifactRow = {
+  path: string;
+  revision: number;
+  content: string;
+  task_id: string | null;
+  created_at: string;
+};
+
+/**
+ * Collects what the delivery gate needs for a Testing step: the files of the
+ * task's latest Develop delivery (written in one transaction, so they share
+ * the development_completed event's timestamp), their previous revisions, and
+ * the scope violations recorded for this iteration.
+ */
+async function loadDeliveryGateInput(
+  admin: ReturnType<typeof createAdminClient>,
+  task: NonNullable<z.infer<typeof ClaimedStepSchema>["task"]>,
+  artifacts: ArtifactRow[],
+): Promise<DeliveryGateInput | undefined> {
+  const { data: events, error } = await admin
+    .from("agent_events")
+    .select("event_type, created_at, metadata")
+    .eq("task_id", task.id)
+    .in("event_type", ["development_completed", "scope_violation"])
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) {
+    // Without the history the gate cannot decide; normal Testing still runs.
+    console.error("Could not load delivery history.", { code: error.code, taskId: task.id });
+    return undefined;
+  }
+  const deliveredAt = events.find((event) => event.event_type === "development_completed")?.created_at;
+  const delivered = artifacts
+    .filter((artifact) => artifact.task_id === task.id && artifact.created_at === deliveredAt)
+    .map((artifact) => ({
+      path: artifact.path,
+      revision: artifact.revision,
+      content: artifact.content,
+      previousContent:
+        artifacts.find(
+          (other) => other.path === artifact.path && other.revision === artifact.revision - 1,
+        )?.content ?? null,
+    }));
+  const outOfScopePaths = events
+    .filter((event) => event.event_type === "scope_violation")
+    .flatMap((event) => {
+      const metadata = event.metadata as { paths?: unknown; iteration?: unknown } | null;
+      return metadata?.iteration === task.iteration && Array.isArray(metadata.paths)
+        ? metadata.paths.filter((path): path is string => typeof path === "string")
+        : [];
+    });
+  return {
+    iteration: task.iteration,
+    delivered,
+    outOfScopePaths: [...new Set(outOfScopePaths)],
+    previousReport: task.previousTestReport,
+  };
 }
 
 function requireTask(step: z.infer<typeof ClaimedStepSchema>) {
