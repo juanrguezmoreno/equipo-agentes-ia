@@ -135,3 +135,13 @@ describe("Testing with convention checks", () => {
     expect(review.calls).toHaveLength(1);
   });
 });
+
+describe("Testing review scope", () => {
+  // Regression: in real run 8 the review failed the form task as "critical"
+  // because the contact page (a later task) did not exist yet, pushing
+  // Develop to write outside its scope.
+  it("judges only the current task, not the rest of the plan", () => {
+    expect(TESTING_SYSTEM_PROMPT).toContain("judge only the current task against its own acceptance criteria and files");
+    expect(TESTING_SYSTEM_PROMPT).toContain("never fail this task for work that belongs to another task");
+  });
+});
