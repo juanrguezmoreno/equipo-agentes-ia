@@ -76,10 +76,14 @@ export function runDeterministicChecks(
         results.push({
           name: `contains_text:${check.path}`,
           passed: content?.includes(check.text) ?? false,
+          // A missing file must say so: "does not contain" made Develop
+          // resend an unchanged, correct file at another path (real run).
           details:
-            content?.includes(check.text) === true
-              ? `${check.path} contiene el texto requerido «${check.text}».`
-              : `${check.path} no contiene el texto requerido «${check.text}».`,
+            content === undefined
+              ? `El archivo ${check.path} no existe, así que no se puede comprobar que contenga «${check.text}».`
+              : content.includes(check.text)
+                ? `${check.path} contiene el texto requerido «${check.text}».`
+                : `${check.path} no contiene el texto requerido «${check.text}».`,
         });
         break;
 
@@ -93,7 +97,9 @@ export function runDeterministicChecks(
           passed,
           details: passed
             ? `${check.path} exporta ${check.symbol}.`
-            : `${check.path} no exporta ${check.symbol}.`,
+            : content === undefined
+              ? `El archivo ${check.path} no existe, así que no puede exportar ${check.symbol}.`
+              : `${check.path} no exporta ${check.symbol}.`,
         });
         break;
       }

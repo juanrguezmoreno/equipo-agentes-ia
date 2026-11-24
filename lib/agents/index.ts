@@ -13,6 +13,7 @@ import {
   type TestingReview,
 } from "./schemas";
 import type { ProviderAttemptRecord } from "@/lib/ai/provider-attempt";
+import { alignCheckPaths } from "./plan-consistency";
 import {
   DEVELOP_SYSTEM_PROMPT,
   ORCHESTRATOR_SYSTEM_PROMPT,
@@ -54,7 +55,7 @@ export async function runOrchestrator(
   });
 
   const generatedPlan = PlanGenerationSchema.parse(result);
-  return PlanSchema.parse({
+  const validPlan = PlanSchema.parse({
     ...generatedPlan,
     tasks: generatedPlan.tasks.map((task) => ({
       ...task,
@@ -69,6 +70,20 @@ export async function runOrchestrator(
         }
       }),
     })),
+  });
+
+  const { plan, repairs } = alignCheckPaths(validPlan);
+  if (repairs.length === 0) {
+    return plan;
+  }
+  // Keep the repair visible in the log ("Plan preparado") and server logs.
+  console.info("Aligned inconsistent check paths in a plan.", { repairs });
+  const note = ` (Se alinearon ${repairs.length} ${
+    repairs.length === 1 ? "ruta de comprobación" : "rutas de comprobación"
+  } con el archivo de su tarea.)`;
+  return PlanSchema.parse({
+    ...plan,
+    summary: `${plan.summary.slice(0, 1000 - note.length)}${note}`,
   });
 }
 
