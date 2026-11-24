@@ -1,7 +1,8 @@
 # Propuesta de arquitectura (Fase 0)
 
 > Estado: propuesta de Fase 0 aprobada y actualizada con el diseño de la UI de
-> Fase 3. La aplicación sigue sin desplegarse públicamente.
+> Fase 3 y la calidad de la Fase 4. La aplicación sigue sin desplegarse
+> públicamente.
 
 ## Objetivo y límites
 
@@ -281,6 +282,69 @@ las filas antiguas al objeto `{criteria, checks}` y alinea su restricción con e
 formato que escribe `complete_agent_step`; el usuario confirmó su aplicación y
 una consulta remota read-only verificó la restricción.
 
+## Calidad (Fase 4)
+
+### Errores para el usuario
+
+- Las rutas devuelven `{ code, error, detail, retryAfterSeconds? }` y la cabecera
+  `Retry-After` cuando esperar ayuda (`lib/http/api-error.ts`). El catálogo
+  `lib/errors/user-messages.ts` traduce cada código a título, explicación y una
+  única acción: volver a lanzar, reanudar, recargar o editar la petición. Lo
+  comparten el cliente y el servidor.
+- Los fallos persistidos de un run se explican a partir del `errorCode` de sus
+  eventos `agent_failed`/`retry_scheduled`: cuota agotada (429), proveedor
+  caído (5xx), timeout, salida mal formada o inválida, límite de iteraciones o
+  de tamaño. Si el claim agota los reintentos sin código, se usa la causa del
+  último reintento. Mientras hay un reintento en curso, un aviso neutro explica
+  la causa y muestra una cuenta atrás.
+- El navegador limita cada `fetch` (75 s por paso, 20 s al crear), reintenta en
+  silencio hasta dos veces los 5xx y los cortes de red (los pasos son
+  idempotentes) y trata el 429 de pasos como una pausa, no como un fallo.
+
+### Validación de la petición
+
+`lib/validation/run-request.ts` se ejecuta en el navegador y de nuevo en el
+servidor. Normaliza (NFC, saltos de línea, espacios) y exige entre 10 y 2000
+caracteres (la BD admite 4000, pero la petición se repite en cada prompt).
+Rechaza caracteres de control, texto sin palabras o repetitivo, y credenciales
+reconocibles (claves de Google, Groq, OpenAI/Anthropic, Supabase, GitHub, AWS,
+JWT y claves privadas PEM), porque el texto se envía a un modelo externo. La
+ruta exige `application/json` (415), limita el cuerpo a 16 KiB (413) y solo
+acepta el campo `request`.
+
+### Rate limiting
+
+Se cuenta en Postgres con el cliente de servicio, porque las instancias
+serverless no comparten memoria (`lib/rate-limit/`). Ventanas deslizantes; los
+límites se configuran con variables `RATE_LIMIT_*`:
+
+| Límite | Defecto | Al superarlo |
+| --- | --- | --- |
+| Runs por usuario y hora | 5 (además, fijo en el RPC con lock) | 429 `run_rate_limited_hour` |
+| Runs por usuario y 24 h | 15 | 429 `run_rate_limited_day` |
+| Runs globales en 24 h | 150 | 429 `global_quota_exhausted` |
+| Pasos con modelo por usuario y minuto | 10 | 429 `step_rate_limited` (el navegador espera) |
+| Pasos con modelo por usuario y 24 h | 200 | 429 `step_quota_exhausted` |
+
+Solo cuentan los intentos reclamados, que son los que llaman a un modelo, y el
+paso final que marca el run como completado nunca se bloquea. Contar y luego
+insertar no es atómico: dos peticiones simultáneas pueden superar un límite por
+una unidad. El tope horario sigue siendo atómico en el RPC. Si el conteo falla,
+la ruta responde 503 en lugar de dejar pasar la petición. Las sesiones anónimas
+son baratas de crear: el límite global es el que acota de verdad el consumo; no
+hay límite por IP.
+
+### Proveedor simulado y E2E
+
+`AI_PROVIDER=mock` sustituye la cadena por `MockLanguageModelV4` (`ai/test`)
+con salidas deterministas que cumplen los checks del plan (`lib/ai/mock-model.ts`).
+Se niega a arrancar si `VERCEL_ENV=production`. Marcadores en la petición
+simulan fallos: `[simular:cuota]`, `[simular:caida]`, `[simular:timeout]`,
+`[simular:formato]` e `[simular:iteracion]`. Playwright (`e2e/`) construye la app,
+la arranca con el mock y nunca reutiliza un servidor existente para no gastar
+cuota real. Usa el proyecto Supabase de `.env.local`: cada test crea un usuario
+anónimo y unos pocos runs.
+
 ## Riesgos y mitigaciones
 
 | Riesgo | Mitigación propuesta |
@@ -291,7 +355,7 @@ una consulta remota read-only verificó la restricción.
 | Acceso a datos de otros usuarios | Auth, RLS por `owner_id`, claves secretas solo en servidor y pruebas de políticas. |
 | Salida del modelo peligrosa o excesiva | Zod, allowlist de rutas, límites de tamaño y parser; no ejecutar el código generado. |
 | Criterios vagos | El plan contiene criterios legibles y aserciones deterministas tipadas; Testing devuelve evidencia. |
-| Coste/abuso en endpoint público | Cinco runs por propietario/hora, límites de cuerpo/contexto/tokens e iteraciones; protección adicional por IP si la infraestructura lo permite. |
+| Coste/abuso en endpoint público | Límites de runs por usuario (hora y día) y globales, de pasos con modelo por usuario (minuto y día), de cuerpo/contexto/tokens e iteraciones. Falta protección por IP frente a la creación masiva de sesiones anónimas; el límite global la acota. |
 | Realtime duplica o pierde eventos | Postgres como fuente de verdad, carga inicial, reconexión/refetch y eventos append-only. |
 | Modelo/proveedor deja de ser compatible | Adaptador separado y pruebas simuladas; secretos y selección por variables. |
 | Groq podría generar cargos en una cuenta con facturación | El fallback solo debe configurarse con cuenta Free sin método de pago; confirmar límites en consola y no asumir que las cuotas son ilimitadas. |

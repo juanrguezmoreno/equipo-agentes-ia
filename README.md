@@ -4,8 +4,9 @@ Aplicación Next.js para coordinar un Orquestador, Develop y Testing. El estado
 del workflow, los eventos y los artefactos virtuales se persisten en Supabase.
 Consulta [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) para el diseño y sus límites.
 
-> Estado: las fases 0–2 están completas y la interfaz de la Fase 3 está en
-> desarrollo local. Todavía no hay una URL pública desplegada.
+> Estado: fases 0–4 implementadas y verificadas en local (la 4 añade errores
+> claros, validación, rate limiting y tests E2E). Todavía no hay una URL
+> pública desplegada.
 
 ## Requisitos
 
@@ -101,9 +102,34 @@ desechable. No se ejecutan contra producción.
 
 ```powershell
 npm run lint
+npx tsc --noEmit
 npm test
 npm run build
+npx playwright install chromium   # solo la primera vez
+npm run test:e2e
 ```
+
+`npm run test:e2e` construye la aplicación y la arranca en el puerto 3200 con
+`AI_PROVIDER=mock`, un proveedor simulado y determinista: los tests no llaman a
+Gemini ni a Groq y no gastan cuota. Sí usan el proyecto Supabase de
+`.env.local`: cada test abre una sesión anónima nueva y crea unas pocas
+ejecuciones. Para no reconstruir, `E2E_SKIP_BUILD=1 npm run test:e2e`. Para
+regenerar las capturas de `docs/screenshots/fase4`, añade `E2E_SCREENSHOTS=1`.
+
+Para probar la interfaz sin modelos reales, arranca `next dev` con
+`AI_PROVIDER=mock`. Añadir `[simular:cuota]`, `[simular:caida]`,
+`[simular:timeout]`, `[simular:formato]` o `[simular:iteracion]` a la petición
+reproduce cada escenario. El modo simulado se niega a funcionar si
+`VERCEL_ENV=production`.
+
+Los límites de uso se ajustan con `RATE_LIMIT_RUNS_PER_USER_HOUR`,
+`RATE_LIMIT_RUNS_PER_USER_DAY`, `RATE_LIMIT_RUNS_GLOBAL_DAY`,
+`RATE_LIMIT_STEPS_PER_USER_MINUTE` y `RATE_LIMIT_STEPS_PER_USER_DAY` (ver
+`.env.example`).
+
+`npm test` arranca Vitest mediante `scripts/vitest.mjs`, que normaliza la letra
+de unidad en Windows: desde un terminal abierto en `d:\…` Vitest cargaba su
+runner dos veces y todas las suites fallaban.
 
 ## Fases y documentación
 

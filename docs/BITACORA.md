@@ -638,3 +638,140 @@ fuera de la página: es espacio del navegador.
 El `next dev` heredado en el puerto 3000 dejó de recoger cambios de CSS. Se
 verificó con `next build` + `next start` en el puerto 3100, sin tocar ese
 proceso. Para ver el cambio en :3000 hay que reiniciar ese servidor.
+
+## Fase 3.5 — Cierre (2026-11-24)
+
+Al retomar el proyecto se revisaron la bitácora, la arquitectura y el historial.
+El rediseño estaba completo en `main`: la alineación de la vía (`539e22f`) y las
+capturas de `docs/screenshots/despues/` ya estaban publicadas. El commit
+`72f7892` («rediseño visual») solo añade skills de diseño en `.claude/skills`.
+Sigue pendiente lo que solo puede hacer el usuario: lanzar
+`/review-animations`. Los estados de error nuevos de la Fase 4 reutilizan los
+tokens y el lenguaje visual del rediseño.
+
+## Fase 4 — Calidad (2026-11-24)
+
+### Petición
+
+Errores claros en la UI (proveedor, cuota agotada, timeouts), estados vacíos y
+de carga en todas las vistas, validación de longitud y contenido de la
+petición, rate limiting por usuario para proteger la cuota gratuita y tests E2E
+con Playwright del flujo principal usando un proveedor simulado. Al terminar:
+tests, lint, TypeScript y build en verde, commit, push y bitácora.
+
+### Documentación consultada (Context7)
+
+- AI SDK, «Testing»: `MockLanguageModelV4` de `ai/test` con
+  `generateText` + `Output.object`. Se comprobó en `node_modules` que la versión
+  instalada (`ai` 7.0.179) exporta esa clase y que `ai/test` no depende de
+  Vitest, así que puede usarse en el servidor.
+- Playwright 1.65, `webServer`: `command`, `url`, `env`, `timeout` y
+  `reuseExistingServer`.
+
+### Decisiones
+
+- **Errores con código estable.** Las rutas devuelven
+  `{ code, error, detail, retryAfterSeconds? }` en español y `Retry-After`. Un
+  único catálogo (`lib/errors/user-messages.ts`), compartido por cliente y
+  servidor, decide el título, la explicación y la acción. Los fallos de un run
+  se explican a partir del `errorCode` de sus eventos, no del texto en inglés
+  guardado para auditoría. Esos textos siguen en inglés en la BD; la UI los
+  traduce para los eventos de fallo y reintento.
+- **Navegador resiliente.** Timeouts de `fetch` (75 s por paso, mayor que el
+  `maxDuration` de 60 s; 20 s al crear), hasta dos reintentos silenciosos ante
+  5xx o cortes de red (los pasos son idempotentes) y espera automática ante el
+  límite por minuto.
+- **Validación.** De 10 a 2000 caracteres. Se bajó de 4000 porque la petición
+  se repite en cada prompt de los tres agentes. Se rechazan caracteres de
+  control, texto sin palabras y credenciales reconocibles. Cuerpo JSON de
+  16 KiB como máximo. El mismo módulo valida en el navegador y en el servidor.
+- **Rate limiting sin migración.** Se cuenta en Postgres desde la ruta con el
+  cliente de servicio, usando ventanas deslizantes y límites configurables
+  (`RATE_LIMIT_*`):
+  - Runs: 5 por usuario y hora, 15 por usuario y día, 150 globales al día.
+  - Pasos con modelo: 10 por usuario y minuto, 200 por usuario y día.
+
+  Si el conteo falla, la ruta responde 503 en lugar de dejar pasar. El límite
+  global es el que acota la creación masiva de sesiones anónimas. Contar y
+  luego insertar no es atómico: queda documentado.
+- **Proveedor simulado.** `AI_PROVIDER=mock` sustituye la cadena por un modelo
+  determinista. Se niega a funcionar con `VERCEL_ENV=production`. Los
+  marcadores `[simular:…]` reproducen cuota, caída, timeout, salida mal
+  formada y una iteración rechazada por Testing.
+- **E2E contra build de producción.** `next build` + `next start` en el puerto
+  3200 con el mock, sin reutilizar nunca un servidor existente, para no gastar
+  cuota real por error.
+
+### Hallazgos y correcciones durante la fase
+
+- **Vitest no arrancaba en este entorno.** Las 8 suites existentes fallaban
+  antes de mis cambios con `Cannot read properties of undefined (reading
+  'config')`. Causa: el terminal estaba en `d:\` en minúscula y Vitest cargaba
+  su runner dos veces. Se confirmó comparando `cmd` en `d:\` (falla) con `D:\`
+  (pasa). `npm test` arranca ahora mediante `scripts/vitest.mjs`, que normaliza
+  la letra de unidad.
+- **Se perdían los eventos más recientes.** El timeline pedía los eventos en
+  orden ascendente con `limit(250)`, así que en runs largos se quedaba con los
+  250 más antiguos. Ahora pide los 250 más recientes y los invierte.
+- **El paso final quedaba bloqueado.** Al capturar las pantallas, el límite de
+  10 pasos por minuto bloqueaba el claim que solo marca el run como
+  completado, que no llama a ningún modelo. La ejecución se quedaba «En
+  ejecución» con 2 de 2 tareas durante 46 s. Ahora ese paso nunca se limita y
+  el test de rate limit bajó de 1 min a 16 s.
+- **Build roto por `Date.now()`.** Next 16 abortaba el prerender por un
+  `Date.now()` en el `useState` inicial. El reloj de la cuenta atrás se fija
+  ahora desde un efecto.
+- **Estados vacíos según el estado del run.** Se distinguen «sin ejecución»,
+  «en curso» y «se detuvo antes de…» en la vía, el registro y el visor. Hay un
+  estado de error con «Reintentar carga» cuando falla la carga inicial de una
+  ejecución, que antes dejaba los skeletons para siempre. «Sin plan» aparece si
+  el run falló.
+
+### Archivos
+
+- Nuevos:
+  - `lib/validation/run-request.ts`
+  - `lib/errors/user-messages.ts`
+  - `lib/http/api-error.ts`
+  - `lib/rate-limit/policy.ts` y `lib/rate-limit/check.ts`
+  - `lib/ai/mock-model.ts` y `lib/ai/provider-label.ts`
+  - `components/notice.tsx`
+  - `e2e/` y `playwright.config.ts`
+  - `scripts/vitest.mjs`
+  - Tests de los módulos nuevos.
+- Modificados:
+  - Ambas rutas de la API.
+  - `dashboard.tsx`, `run-track.tsx`, `event-timeline.tsx` y `code-viewer.tsx`.
+  - `presentation.ts`, `model-config.ts`, `model.ts` y `provider-attempt.ts`.
+  - `globals.css` (estilos de aviso y de campo inválido).
+  - `.env.example`, README y ARQUITECTURA.
+- Eliminado: `CreateRunSchema`, sustituido por el validador compartido.
+- Sin migraciones nuevas.
+
+### Verificación
+
+- `npm test`: 12 ficheros y 76 tests pasan.
+- `npx tsc --noEmit` y `npm run lint`: sin errores ni avisos.
+- `npm run build`: correcto. Lo ejecuta el `webServer` de Playwright.
+- `npm run test:e2e` (Playwright, Chromium, build de producción con el mock): 7 tests pasan, más 3 de capturas con `E2E_SCREENSHOTS=1` (10 de 10 en 1,8 min): flujo principal, iteración Develop↔Testing, validación en cliente y en servidor (400/413/415), cuota agotada con reintento automático, salida mal formada y límite diario.
+- Capturas en `docs/screenshots/fase4/`:
+  - Validación en línea.
+  - Ejecución en curso y completada (claro).
+  - Reintento automático y cuota agotada (oscuro).
+  - Límite diario en móvil a 390 px, sin scroll horizontal (comprobado en el
+    test).
+- Ninguna ejecución real con Gemini o Groq en esta fase: todo con el proveedor
+  simulado (0 de 10 del cupo diario).
+
+### Limitaciones
+
+- Los E2E usan el proyecto Supabase real: cada ejecución crea usuarios
+  anónimos y runs de prueba. No hay entorno Supabase desechable (el usuario
+  pidió no usar Docker ni Supabase local).
+- No hay límite por IP. Un atacante puede crear muchas sesiones anónimas hasta
+  alcanzar el límite global diario.
+- Los resúmenes de eventos que no son de error («Create an ordered task
+  plan.», «A new agent run was created.») siguen en inglés, porque los escriben
+  las RPC.
+- `npx playwright install chromium` actualizó los navegadores a la build 1255 y
+  retiró la 1228.
