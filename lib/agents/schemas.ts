@@ -262,12 +262,6 @@ export const TestReportSchema = z
     }
   });
 
-export const CreateRunSchema = z
-  .object({
-    request: z.string().trim().min(1).max(4000),
-  })
-  .strict();
-
 export const ClaimedStepSchema = z
   .object({
     status: z.literal("claimed"),

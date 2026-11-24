@@ -4,7 +4,9 @@ export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b";
 
 export type ModelEnvironment = Record<string, string | undefined>;
 
-export type AIProvider = "google" | "groq";
+export const MOCK_MODEL_ID = "mock-agents";
+
+export type AIProvider = "google" | "groq" | "mock";
 
 export interface ProviderModel {
   provider: AIProvider;
@@ -37,8 +39,16 @@ export function getProviderModelChain(
   env: ModelEnvironment = process.env,
 ): ProviderModel[] {
   const preferredProvider = env.AI_PROVIDER?.trim() || "google";
+  if (preferredProvider === "mock") {
+    // Deterministic offline provider for end-to-end tests and demos. It never
+    // calls a real model, so it must not silently replace one in production.
+    if (env.VERCEL_ENV === "production") {
+      throw new Error("AI_PROVIDER=mock is not allowed in production.");
+    }
+    return [{ provider: "mock", modelId: MOCK_MODEL_ID }];
+  }
   if (preferredProvider !== "google" && preferredProvider !== "groq") {
-    throw new Error("AI_PROVIDER must be either 'google' or 'groq'");
+    throw new Error("AI_PROVIDER must be 'google', 'groq' or 'mock'");
   }
 
   const googleModels = [

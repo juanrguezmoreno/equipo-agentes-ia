@@ -14,10 +14,12 @@ export default function CodeViewer({
   artifacts,
   tasks,
   loading,
+  runStatus,
 }: {
   artifacts: Artifact[];
   tasks: Task[];
   loading: boolean;
+  runStatus: Tables<"agent_runs">["status"] | null;
 }) {
   const sortedArtifacts = useMemo(
     () =>
@@ -114,8 +116,11 @@ export default function CodeViewer({
         </div>
       ) : (
         <p className="empty-state">
-          Develop todavía no ha escrito archivos. Cada versión que guarde se
-          podrá abrir aquí, también las anteriores.
+          {runStatus === null
+            ? "Aquí podrás abrir cada archivo que escriba Develop, con todas sus versiones."
+            : runStatus === "failed" || runStatus === "cancelled"
+              ? "La ejecución se detuvo antes de que Develop escribiera archivos."
+              : "Develop todavía no ha escrito archivos. Cada versión que guarde se podrá abrir aquí, también las anteriores."}
         </p>
       )}
     </section>

@@ -2,6 +2,7 @@ import "server-only";
 
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createGroq } from "@ai-sdk/groq";
+import { createMockLanguageModel } from "./mock-model";
 import type { ProviderModel } from "./model-config";
 
 function requiredEnv(name: string): string {
@@ -26,5 +27,7 @@ export function getLanguageModel(target: ProviderModel) {
       });
       return groq(target.modelId);
     }
+    case "mock":
+      return createMockLanguageModel();
   }
 }

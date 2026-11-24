@@ -14,6 +14,7 @@ import {
 export const PROVIDER_TIMEOUT_MS: Record<AIProvider, number> = {
   google: 25_000,
   groq: 30_000,
+  mock: 10_000,
 };
 
 /** Below this remaining budget a provider call is not worth starting. */

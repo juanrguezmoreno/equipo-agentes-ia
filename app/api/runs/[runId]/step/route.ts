@@ -13,7 +13,10 @@ import {
   MAX_PROJECT_CONTEXT_CHARS,
   StepClaimResponseSchema,
 } from "@/lib/agents/schemas";
+import { providerLabel } from "@/lib/ai/provider-label";
+import { apiError } from "@/lib/http/api-error";
 import { retryDelayMs } from "@/lib/orchestration/state-machine";
+import { checkStepLimit } from "@/lib/rate-limit/check";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthenticatedUser } from "@/lib/supabase/authenticated-user";
 import type { Json } from "@/types/database";
@@ -39,16 +42,35 @@ export async function POST(_request: Request, { params }: RouteContext) {
   const { runId: rawRunId } = await params;
   const parsedRunId = RunIdSchema.safeParse(rawRunId);
   if (!parsedRunId.success) {
-    return Response.json({ error: "Invalid run id." }, { status: 400 });
+    return apiError("invalid_run_id", 400);
   }
 
   const { user, error: authError } = await getAuthenticatedUser();
   if (authError || !user) {
-    const status = authError?.status && authError.status >= 500 ? 503 : 401;
-    return Response.json({ error: "Authentication is required." }, { status });
+    return authError?.status && authError.status >= 500
+      ? apiError("auth_unavailable", 503)
+      : apiError("auth_required", 401);
   }
 
   const admin = createAdminClient();
+  // Checked before claiming: a claim creates the attempt row that this check
+  // counts, and every claimed attempt may call up to three providers.
+  const limit = await checkStepLimit(admin, user.id);
+  if (
+    !limit.allowed &&
+    !(await onlyFinalizationRemains(admin, parsedRunId.data, user.id))
+  ) {
+    if (limit.code === "server_error") {
+      console.error("Could not evaluate step rate limits.", {
+        runId: parsedRunId.data,
+      });
+      return apiError("server_error", 503);
+    }
+    return apiError(limit.code, 429, {
+      retryAfterSeconds: limit.retryAfterSeconds,
+    });
+  }
+
   const { data: claimData, error: claimError } = await admin.rpc(
     "claim_next_agent_step",
     {
@@ -60,14 +82,14 @@ export async function POST(_request: Request, { params }: RouteContext) {
 
   if (claimError) {
     if (claimError.code === "P0002") {
-      return Response.json({ error: "Run not found." }, { status: 404 });
+      return apiError("run_not_found", 404);
     }
 
     console.error("Could not claim agent step.", {
       code: claimError.code,
       runId: parsedRunId.data,
     });
-    return Response.json({ error: "Could not advance the run." }, { status: 500 });
+    return apiError("server_error", 500);
   }
 
   const claim = StepClaimResponseSchema.safeParse(claimData);
@@ -76,7 +98,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
       issues: claim.error.issues.map((issue) => issue.path.join(".")),
       runId: parsedRunId.data,
     });
-    return Response.json({ error: "Could not advance the run." }, { status: 500 });
+    return apiError("server_error", 500);
   }
 
   if (claim.data.status !== "claimed") {
@@ -245,10 +267,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
       runId: parsedRunId.data,
       attemptId: claim.data.attemptId,
     });
-    return Response.json(
-      { error: "The agent result could not be saved. Retry shortly." },
-      { status: 500 },
-    );
+    return apiError("step_persist_failed", 500);
   }
 
   return Response.json({ status: "step_completed", completion });
@@ -271,7 +290,7 @@ async function recordProviderAttempts(
   }
 
   const rows = attempts.map((attempt, index) => {
-    const providerName = attempt.target.provider === "google" ? "Gemini" : "Groq";
+    const providerName = providerLabel(attempt.target.provider);
     const statusSummary =
       attempt.outcome === "failed"
         ? attempt.statusCode
@@ -313,6 +332,33 @@ async function recordProviderAttempts(
       return;
     }
   }
+}
+
+/**
+ * True when every task is already approved, so the next claim only marks the
+ * run completed and calls no model. Rate limits must not hold that step back.
+ */
+async function onlyFinalizationRemains(
+  admin: ReturnType<typeof createAdminClient>,
+  runId: string,
+  ownerId: string,
+): Promise<boolean> {
+  const [{ data: run }, { data: tasks, error: tasksError }] = await Promise.all([
+    admin
+      .from("agent_runs")
+      .select("status")
+      .eq("id", runId)
+      .eq("owner_id", ownerId)
+      .maybeSingle(),
+    admin.from("agent_tasks").select("status").eq("run_id", runId),
+  ]);
+  return (
+    run?.status === "running" &&
+    !tasksError &&
+    tasks !== null &&
+    tasks.length > 0 &&
+    tasks.every((task) => task.status === "completed")
+  );
 }
 
 function requireTask(step: z.infer<typeof ClaimedStepSchema>) {
@@ -369,10 +415,7 @@ async function recordFailure(
       code: error.code,
       attemptId,
     });
-    return Response.json(
-      { error: "The agent step failed and its status could not be saved." },
-      { status: 500 },
-    );
+    return apiError("step_persist_failed", 500);
   }
 
   const status =

@@ -1,3 +1,4 @@
+import { providerLabel } from "@/lib/ai/provider-label";
 import type { CSSProperties } from "react";
 import { AgentIcon, identities, type StationId } from "@/components/agent-identity";
 import {
@@ -81,7 +82,7 @@ function Station({
 }) {
   const presentation = getAgentPresentation(agent, run, tasks, events);
   const provider = presentation.provider;
-  const providerName = provider?.provider === "google" ? "Gemini" : "Groq";
+  const providerName = provider ? providerLabel(provider.provider) : "";
 
   return (
     <li className="station" data-agent={agent} data-state={presentation.state}>
@@ -390,9 +391,11 @@ export default function RunTrack({
           </div>
         ) : orderedTasks.length === 0 ? (
           <p className="empty-state">
-            {run
-              ? "El Orquestador está preparando el plan. Cada tarea aparecerá aquí como una ficha que avanza de Develop a Testing."
-              : "Escribe una petición o prueba un ejemplo. El Orquestador la dividirá en tareas y verás cada una avanzar por la vía."}
+            {!run
+              ? "Escribe una petición o prueba un ejemplo. El Orquestador la dividirá en tareas y verás cada una avanzar por la vía."
+              : run.status === "failed" || run.status === "cancelled"
+                ? "La ejecución se detuvo antes de que el Orquestador terminara el plan, así que no hay tareas. El aviso de arriba explica el motivo."
+                : "El Orquestador está preparando el plan. Cada tarea aparecerá aquí como una ficha que avanza de Develop a Testing."}
           </p>
         ) : (
           <ol className="lanes" aria-label="Tareas">

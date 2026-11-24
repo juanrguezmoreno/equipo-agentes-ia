@@ -1,4 +1,6 @@
 import { TestReportSchema, type TestReport } from "@/lib/agents/schemas";
+import { isProviderId, type ProviderId } from "@/lib/ai/provider-label";
+import { describeEventSummary } from "@/lib/errors/user-messages";
 import type { Tables } from "@/types/database";
 
 export type AgentName = "orchestrator" | "develop" | "testing";
@@ -10,7 +12,7 @@ export type AgentActivityState =
   | "pending";
 
 export interface AgentProvider {
-  provider: "google" | "groq";
+  provider: ProviderId;
   model: string;
   outcome: "succeeded" | "failed";
   statusCode?: number;
@@ -57,6 +59,7 @@ export function getAgentPresentation(
     .sort((left, right) => left.created_at.localeCompare(right.created_at));
   const lastEvent = agentEvents[agentEvents.length - 1];
   const message =
+    (lastEvent && describeEventSummary(lastEvent)) ||
     lastEvent?.output_summary?.trim() ||
     lastEvent?.input_summary?.trim() ||
     agentFallback[agent];
@@ -113,7 +116,7 @@ function getAgentProvider(events: AgentEvent[]): AgentProvider | null {
   const metadata = latestEvent ? asRecord(latestEvent.metadata) : null;
   if (
     metadata === null ||
-    (metadata.provider !== "google" && metadata.provider !== "groq") ||
+    !isProviderId(metadata.provider) ||
     typeof metadata.model !== "string" ||
     (metadata.outcome !== "succeeded" && metadata.outcome !== "failed")
   ) {

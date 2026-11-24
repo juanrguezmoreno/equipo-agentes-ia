@@ -11,10 +11,24 @@ import {
 import Link from "next/link";
 import CodeViewer from "@/components/code-viewer";
 import EventTimeline from "@/components/event-timeline";
+import Notice from "@/components/notice";
 import RunTrack from "@/components/run-track";
 import ThemeToggle from "@/components/theme-toggle";
-import { CreateRunSchema } from "@/lib/agents/schemas";
+import {
+  describeApiError,
+  describeApiErrorBody,
+  describeClientError,
+  describeRetryWait,
+  describeRunFailure,
+  type ErrorAction,
+  type UserFacingError,
+} from "@/lib/errors/user-messages";
 import { createClient } from "@/lib/supabase/client";
+import {
+  RUN_REQUEST_MAX_CHARS,
+  normalizeRunRequest,
+  validateRunRequest,
+} from "@/lib/validation/run-request";
 import type { Tables } from "@/types/database";
 
 type SupabaseClient = ReturnType<typeof createClient>;
@@ -76,6 +90,57 @@ function runLampState(run: Run): "done" | "error" | "waiting" | "active" {
 
 const RunResponseSchema = z.object({ runId: z.uuid() });
 const MAX_BROWSER_STEPS = 100;
+/** Longer than the step route's 60 s maxDuration, so a slow step can finish. */
+const STEP_REQUEST_TIMEOUT_MS = 75_000;
+const CREATE_REQUEST_TIMEOUT_MS = 20_000;
+/** Transient 5xx/network failures retried before the user is asked to act. */
+const MAX_TRANSIENT_STEP_FAILURES = 2;
+
+class ApiFailure extends Error {
+  constructor(
+    readonly notice: UserFacingError,
+    readonly status: number,
+  ) {
+    super(notice.title);
+  }
+}
+
+/** POSTs JSON and returns the parsed body, or throws an ApiFailure. */
+async function postJson(
+  url: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<{ status: number; payload: Record<string, unknown> }> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new ApiFailure(describeClientError(error), 0);
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ApiFailure(
+      response.ok
+        ? describeApiError("invalid_response")
+        : describeApiError(response.status >= 500 ? "server_error" : "invalid_response"),
+      response.status,
+    );
+  }
+  if (!response.ok) {
+    throw new ApiFailure(describeApiErrorBody(payload), response.status);
+  }
+  if (!isRecord(payload)) {
+    throw new ApiFailure(describeApiError("invalid_response"), response.status);
+  }
+  return { status: response.status, payload };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -147,10 +212,19 @@ export default function Dashboard() {
   const [prompt, setPrompt] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [processingRunId, setProcessingRunId] = useState<string | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<UserFacingError | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
-  const [processNotice, setProcessNotice] = useState<string | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [processNotice, setProcessNotice] = useState<UserFacingError | null>(
+    null,
+  );
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [snapshotRetry, setSnapshotRetry] = useState(0);
+  // Set from an effect only: reading the time during render would make the
+  // prerendered HTML depend on the build time.
+  const [clock, setClock] = useState<number | null>(null);
   const processLock = useRef(false);
+  const requestInputRef = useRef<HTMLTextAreaElement>(null);
   const [realtimeConnection, setRealtimeConnection] = useState<{
     runId: string;
     state: RealtimeState;
@@ -168,7 +242,7 @@ export default function Dashboard() {
       .catch(() => {
         if (active) {
           setAuthState("error");
-          setRunError(
+          setBootError(
             "Falta la configuración pública de Supabase. Revisa las variables de entorno de la aplicación.",
           );
         }
@@ -205,7 +279,7 @@ export default function Dashboard() {
       if (error) {
         if (active) {
           setAuthState("error");
-          setRunError("No se pudo recuperar la sesión. Inténtalo de nuevo.");
+          setBootError("No se pudo recuperar la sesión. Inténtalo de nuevo.");
         }
         return;
       }
@@ -216,7 +290,7 @@ export default function Dashboard() {
         if (signInError || !anonymousData.session) {
           if (active) {
             setAuthState("error");
-            setRunError(
+            setBootError(
               "No se pudo iniciar una sesión. Comprueba la URL y la clave pública de Supabase, el estado del proyecto y que Anonymous Sign-Ins esté habilitado.",
             );
           }
@@ -233,11 +307,14 @@ export default function Dashboard() {
         return;
       }
       if (history === null) {
+        setBootError(
+          "La sesión está abierta, pero no se pudo cargar tu historial de ejecuciones. Comprueba la conexión y vuelve a intentarlo.",
+        );
         setAuthState("error");
         return;
       }
       setSelectedRunId((current) => current ?? history[0]?.id ?? null);
-      setRunError(null);
+      setBootError(null);
       setAuthState("ready");
     }
 
@@ -266,11 +343,13 @@ export default function Dashboard() {
             .select("*")
             .eq("run_id", runId)
             .order("created_at", { ascending: true }),
+          // Newest 250 events; reversed below so the timeline keeps the latest.
           client
             .from("agent_events")
             .select("*")
             .eq("run_id", runId)
-            .order("created_at", { ascending: true })
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
             .limit(250),
         ]);
       if (!isCurrent()) {
@@ -292,7 +371,7 @@ export default function Dashboard() {
       setRun(currentRun);
       setTasks(taskResult.data);
       setArtifacts(artifactResult.data);
-      setEvents(eventResult.data);
+      setEvents([...eventResult.data].reverse());
       setRuns((current) => {
         const next = [
           currentRun,
@@ -401,7 +480,8 @@ export default function Dashboard() {
       }
       void supabase.removeChannel(channel);
     };
-  }, [authState, refreshSnapshot, selectedRunId, supabase]);
+    // snapshotRetry re-runs the initial load after the user asks to retry.
+  }, [authState, refreshSnapshot, selectedRunId, snapshotRetry, supabase]);
 
   const processRun = useCallback(
     async (runId: string, client: SupabaseClient) => {
@@ -412,31 +492,43 @@ export default function Dashboard() {
       setProcessingRunId(runId);
       setProcessNotice(null);
       setRunError(null);
+      let transientFailures = 0;
 
       try {
         for (let step = 0; step < MAX_BROWSER_STEPS; step += 1) {
-          const response = await fetch(
-            `/api/runs/${encodeURIComponent(runId)}/step`,
-            { method: "POST" },
-          );
-          let payload: unknown;
+          let payload: Record<string, unknown>;
           try {
-            payload = await response.json();
-          } catch {
-            throw new Error("El servidor devolvió una respuesta no válida.");
+            ({ payload } = await postJson(
+              `/api/runs/${encodeURIComponent(runId)}/step`,
+              undefined,
+              STEP_REQUEST_TIMEOUT_MS,
+            ));
+          } catch (error) {
+            if (!(error instanceof ApiFailure)) {
+              throw error;
+            }
+            // The per-user step limit is a pause, not a failure: wait it out.
+            if (error.notice.code === "step_rate_limited") {
+              setProcessNotice(error.notice);
+              await wait(
+                Math.min((error.notice.retryAfterSeconds ?? 5) * 1000, 60_000),
+              );
+              setProcessNotice(null);
+              continue;
+            }
+            // Steps are idempotent (leases + attempt rows), so a dropped
+            // connection or a 5xx can be retried a couple of times silently.
+            const transient = error.status === 0 || error.status >= 500;
+            if (transient && transientFailures < MAX_TRANSIENT_STEP_FAILURES) {
+              transientFailures += 1;
+              await wait(1_500 * transientFailures);
+              continue;
+            }
+            throw error;
           }
-          if (!isRecord(payload)) {
-            throw new Error("El servidor devolvió una respuesta no válida.");
-          }
-          if (!response.ok) {
-            throw new Error(
-              typeof payload.error === "string"
-                ? payload.error
-                : "No se pudo avanzar la ejecución.",
-            );
-          }
+          transientFailures = 0;
           if (typeof payload.status !== "string") {
-            throw new Error("El servidor devolvió un estado no válido.");
+            throw new ApiFailure(describeApiError("invalid_response"), 200);
           }
 
           await refreshSnapshot(client, runId);
@@ -463,25 +555,22 @@ export default function Dashboard() {
             payload.status === "failed" ||
             payload.status === "cancelled"
           ) {
-            if (
-              payload.status === "failed" &&
-              typeof payload.error === "string"
-            ) {
-              setRunError(payload.error);
-            }
+            // A failed run explains itself from its persisted events.
             return;
           }
-          throw new Error("El servidor devolvió un estado de ejecución desconocido.");
+          throw new ApiFailure(describeApiError("invalid_response"), 200);
         }
 
-        setProcessNotice(
-          "La ejecución sigue activa y alcanzó el límite de pasos de esta sesión. Puedes reanudarla.",
-        );
+        setProcessNotice({
+          code: "browser_step_budget",
+          title: "La ejecución sigue en marcha",
+          detail:
+            "Esta pestaña ha avanzado el máximo de pasos seguidos que permite una sesión. Reanúdala para continuar.",
+          action: "resume",
+        });
       } catch (error) {
         setRunError(
-          error instanceof Error
-            ? error.message
-            : "No se pudo continuar la ejecución. Puedes reanudarla.",
+          error instanceof ApiFailure ? error.notice : describeClientError(error),
         );
         await refreshSnapshot(client, runId);
       } finally {
@@ -496,37 +585,26 @@ export default function Dashboard() {
     if (!supabase || authState !== "ready" || isCreating || processLock.current) {
       return;
     }
-    const parsedRequest = CreateRunSchema.safeParse({ request: requestText });
-    if (!parsedRequest.success) {
-      setRunError("Escribe una petición de entre 1 y 4000 caracteres.");
+    const validation = validateRunRequest(requestText);
+    if (!validation.ok) {
+      setRequestError(validation.message);
+      requestInputRef.current?.focus();
       return;
     }
 
+    setRequestError(null);
     setIsCreating(true);
     setRunError(null);
     setProcessNotice(null);
     try {
-      const response = await fetch("/api/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(parsedRequest.data),
-      });
-      let payload: unknown;
-      try {
-        payload = await response.json();
-      } catch {
-        throw new Error("El servidor devolvió una respuesta no válida.");
-      }
-      if (!response.ok) {
-        throw new Error(
-          isRecord(payload) && typeof payload.error === "string"
-            ? payload.error
-            : "No se pudo crear la ejecución.",
-        );
-      }
+      const { payload } = await postJson(
+        "/api/runs",
+        { request: validation.value },
+        CREATE_REQUEST_TIMEOUT_MS,
+      );
       const parsedResponse = RunResponseSchema.safeParse(payload);
       if (!parsedResponse.success) {
-        throw new Error("No se recibió el identificador de la ejecución.");
+        throw new ApiFailure(describeApiError("invalid_response"), 201);
       }
 
       const runId = parsedResponse.data.runId;
@@ -536,9 +614,24 @@ export default function Dashboard() {
       await refreshRunHistory(supabase);
       await processRun(runId, supabase);
     } catch (error) {
-      setRunError(
-        error instanceof Error ? error.message : "No se pudo crear la ejecución.",
-      );
+      const notice =
+        error instanceof ApiFailure ? error.notice : describeClientError(error);
+      if (notice.code === "invalid_request" || notice.code === "payload_too_large") {
+        setRequestError(notice.detail);
+        requestInputRef.current?.focus();
+      } else if (notice.action === "resume") {
+        // Nothing was created yet, so "resume" would point at another run.
+        setRunError({
+          ...notice,
+          detail:
+            notice.code === "network_error" || notice.code === "request_timeout"
+              ? "No se pudo enviar la petición. Comprueba la conexión y vuelve a pulsar «Iniciar equipo»; tu texto sigue en el cuadro."
+              : "No se pudo crear la ejecución. Vuelve a pulsar «Iniciar equipo» en unos segundos; tu texto sigue en el cuadro.",
+          action: undefined,
+        });
+      } else {
+        setRunError(notice);
+      }
     } finally {
       setIsCreating(false);
     }
@@ -554,6 +647,32 @@ export default function Dashboard() {
     void startRun(example);
   }
 
+  function handleNoticeAction(action: ErrorAction) {
+    switch (action) {
+      case "retry_run":
+        if (selectedRun) {
+          void startRun(selectedRun.request);
+        }
+        return;
+      case "resume":
+        if (supabase && selectedRunId) {
+          void processRun(selectedRunId, supabase);
+        }
+        return;
+      case "reload":
+        window.location.reload();
+        return;
+      case "edit":
+        if (selectedRun && !prompt.trim()) {
+          setPrompt(selectedRun.request);
+        }
+        requestInputRef.current?.focus();
+        return;
+      case "wait":
+        return;
+    }
+  }
+
   const isProcessingSelectedRun =
     processingRunId !== null && processingRunId === selectedRunId;
   const isAnyRunProcessing = processingRunId !== null;
@@ -567,6 +686,29 @@ export default function Dashboard() {
       : "connecting"
     : "idle";
   const snapshotLoading = Boolean(selectedRunId && !selectedRun);
+  const isRetryWaiting = selectedRun?.status === "retry_wait";
+  const promptLength = normalizeRunRequest(prompt).length;
+
+  // Ticks once a second only while a retry is pending, for its countdown.
+  useEffect(() => {
+    if (!isRetryWaiting) {
+      return;
+    }
+    const tick = () => setClock(Date.now());
+    const first = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 1_000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [isRetryWaiting]);
+
+  const runFailure = selectedRun
+    ? describeRunFailure(selectedRun, selectedEvents)
+    : null;
+  const retryNotice = selectedRun
+    ? describeRetryWait(selectedRun, selectedEvents, clock)
+    : null;
 
   if (authState !== "ready") {
     return (
@@ -581,7 +723,7 @@ export default function Dashboard() {
           <p className="boot-copy">
             {authState === "loading"
               ? "Tus ejecuciones se guardan en esta sesión anónima y solo tú puedes verlas."
-              : runError || "Comprueba la conexión y vuelve a intentarlo."}
+              : bootError || "Comprueba la conexión y vuelve a intentarlo."}
           </p>
           {authState === "loading" ? (
             <p className="boot-status" role="status">
@@ -593,7 +735,7 @@ export default function Dashboard() {
               className="button button-primary"
               type="button"
               onClick={() => {
-                setRunError(null);
+                setBootError(null);
                 setAuthState("loading");
                 setAuthRetry((attempt) => attempt + 1);
               }}
@@ -678,7 +820,13 @@ export default function Dashboard() {
                 className="field-input"
                 id="request-input"
                 value={prompt}
-                onChange={(event) => setPrompt(event.currentTarget.value)}
+                ref={requestInputRef}
+                onChange={(event) => {
+                  setPrompt(event.currentTarget.value);
+                  if (requestError) {
+                    setRequestError(null);
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (
                     event.key === "Enter" &&
@@ -688,15 +836,25 @@ export default function Dashboard() {
                   }
                 }}
                 placeholder="Por ejemplo: añade una página de contacto accesible a esta web"
-                maxLength={4000}
                 rows={2}
-                aria-describedby="request-hint"
+                aria-describedby={
+                  requestError ? "request-error request-hint" : "request-hint"
+                }
+                aria-invalid={requestError ? true : undefined}
                 disabled={isCreating || isAnyRunProcessing}
                 required
               />
+              {requestError && (
+                <p className="field-error" id="request-error" role="alert">
+                  {requestError}
+                </p>
+              )}
               <p className="field-hint" id="request-hint">
                 <span>Ctrl + Enter para enviar</span>
-                <span aria-live="polite">{prompt.length} / 4000</span>
+                <span data-over={promptLength > RUN_REQUEST_MAX_CHARS}>
+                  {promptLength} / {RUN_REQUEST_MAX_CHARS}
+                  <span className="sr-only"> caracteres</span>
+                </span>
               </p>
             </div>
             <button
@@ -730,15 +888,28 @@ export default function Dashboard() {
               ))}
             </div>
           </div>
-          {(runError || selectedRun?.error_message) && (
-            <p className="banner" data-tone="danger" role="alert">
-              {runError || selectedRun?.error_message}
-            </p>
+          {runError && (
+            <Notice
+              notice={runError}
+              tone="danger"
+              onAction={handleNoticeAction}
+              onDismiss={() => setRunError(null)}
+            />
           )}
+          {!runError && runFailure && !isProcessingSelectedRun && (
+            <Notice
+              notice={runFailure}
+              tone="danger"
+              onAction={handleNoticeAction}
+            />
+          )}
+          {retryNotice && <Notice notice={retryNotice} tone="neutral" />}
           {processNotice && (
-            <p className="banner" data-tone="neutral" role="status">
-              {processNotice}
-            </p>
+            <Notice
+              notice={processNotice}
+              tone="neutral"
+              onAction={handleNoticeAction}
+            />
           )}
           {processingRunId && !isProcessingSelectedRun && (
             <p className="banner" data-tone="neutral" role="status">
@@ -746,14 +917,34 @@ export default function Dashboard() {
               seguirla.
             </p>
           )}
-          {dataError && (
+          {dataError && !snapshotLoading && (
             <p className="banner" data-tone="danger" role="status">
-              {dataError}
+              {dataError} Se volverá a intentar al recibir cambios.
             </p>
           )}
         </section>
 
-        {snapshotLoading ? (
+        {snapshotLoading && dataError ? (
+          <section className="run-head error-state" aria-labelledby="load-error-heading">
+            <h2 id="load-error-heading" className="notice-title">
+              No se pudo cargar esta ejecución
+            </h2>
+            <p className="notice-detail">
+              Supabase no respondió. Comprueba la conexión y vuelve a
+              intentarlo, o elige otra ejecución en el historial.
+            </p>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                setDataError(null);
+                setSnapshotRetry((attempt) => attempt + 1);
+              }}
+            >
+              Reintentar carga
+            </button>
+          </section>
+        ) : snapshotLoading ? (
           <section className="run-head" aria-busy="true" aria-label="Cargando ejecución">
             <div className="skeleton skeleton-title" />
             <div className="skeleton skeleton-meta" />
@@ -797,7 +988,9 @@ export default function Dashboard() {
                     <dt>Tareas aprobadas</dt>
                     <dd>
                       {selectedTasks.length === 0
-                        ? "Sin plan aún"
+                        ? selectedRun.status === "failed"
+                          ? "Sin plan"
+                          : "Sin plan aún"
                         : `${completedTasks} de ${selectedTasks.length}`}
                     </dd>
                   </div>
@@ -835,12 +1028,14 @@ export default function Dashboard() {
           <EventTimeline
             events={selectedEvents}
             state={realtimeState}
-            loading={snapshotLoading}
+            loading={snapshotLoading && !dataError}
+            hasRun={Boolean(selectedRun)}
           />
           <CodeViewer
             artifacts={selectedArtifacts}
             tasks={selectedTasks}
-            loading={snapshotLoading}
+            loading={snapshotLoading && !dataError}
+            runStatus={selectedRun?.status ?? null}
           />
         </div>
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { isProviderId, providerLabel } from "@/lib/ai/provider-label";
+import { describeEventSummary } from "@/lib/errors/user-messages";
 import { useEffect, useState } from "react";
 import { AgentIcon, identities } from "@/components/agent-identity";
 import { getEventLabel } from "@/lib/dashboard/presentation";
@@ -38,7 +40,9 @@ function getSummary(event: AgentEvent): string | null {
     !Array.isArray(metadata) &&
     typeof metadata.model === "string"
   ) {
-    const provider = metadata.provider === "google" ? "Gemini" : "Groq";
+    const provider = isProviderId(metadata.provider)
+      ? providerLabel(metadata.provider)
+      : "Proveedor";
     const result =
       metadata.outcome === "succeeded"
         ? "respondió"
@@ -51,17 +55,19 @@ function getSummary(event: AgentEvent): string | null {
         : "";
     return `${provider} (${metadata.model}) ${result}${duration}`;
   }
-  return event.output_summary || event.input_summary;
+  return describeEventSummary(event) ?? (event.output_summary || event.input_summary);
 }
 
 export default function EventTimeline({
   events,
   state,
   loading,
+  hasRun,
 }: {
   events: AgentEvent[];
   state: RealtimeState;
   loading: boolean;
+  hasRun: boolean;
 }) {
   // Entry motion only for events that arrive after the first render, so the
   // initial history does not animate in all at once.
@@ -92,8 +98,9 @@ export default function EventTimeline({
         </div>
       ) : newestFirst.length === 0 ? (
         <p className="empty-state">
-          Cada paso de los agentes quedará anotado aquí con su hora, empezando
-          por el más reciente.
+          {hasRun
+            ? "Todavía no hay pasos registrados. El primero aparecerá en cuanto el Orquestador empiece a planificar."
+            : "Cuando lances una petición, cada paso de los agentes quedará anotado aquí con su hora, empezando por el más reciente."}
         </p>
       ) : (
         <ol
