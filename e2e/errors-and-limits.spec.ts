@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
+import { useFakeBackend } from "./fake-backend";
 import {
   openDashboard,
   requestInput,
   runStatus,
   station,
   submitRequest,
-  waitForCompletion,
 } from "./helpers";
 
 test.describe("validación de la petición", () => {
@@ -41,6 +41,8 @@ test.describe("validación de la petición", () => {
     expect(runPosts).toEqual([]);
   });
 
+  // Real API with the shared session: every request is rejected before any
+  // write, so it creates no runs.
   test("el servidor valida aunque se salte el formulario", async ({ page }) => {
     await openDashboard(page);
     const result = await page.evaluate(async () => {
@@ -73,10 +75,13 @@ test.describe("validación de la petición", () => {
   });
 });
 
-test.describe("errores del proveedor", () => {
+// The UI's handling of failures is tested against a fake backend: these
+// scenarios need no real runs, sessions or model calls.
+test.describe("errores del proveedor (backend simulado)", () => {
   test("cuota agotada: reintenta y después explica qué hacer", async ({ page }) => {
+    await useFakeBackend(page, "quota");
     await openDashboard(page);
-    await submitRequest(page, "Crea un README para la demo [simular:cuota]");
+    await submitRequest(page, "Crea un README para la demo");
 
     // While the backoff runs, the user sees why and when it retries.
     const retryNotice = page.locator(".notice", { hasText: "Reintento automático en marcha" });
@@ -84,45 +89,45 @@ test.describe("errores del proveedor", () => {
     await expect(retryNotice).toContainText("límite de uso (HTTP 429)");
 
     // After the last attempt the run fails with an actionable explanation.
-    await expect(runStatus(page)).toHaveText("Fallida", { timeout: 60_000 });
+    await expect(runStatus(page)).toHaveText("Fallida", { timeout: 30_000 });
     const failure = page.locator('.notice[data-tone="danger"]');
     await expect(failure).toContainText("Cuota del proveedor agotada");
-    await expect(failure).toContainText("el Orquestador");
+    await expect(failure).toContainText("del Orquestador");
     await expect(failure.getByRole("button", { name: "Volver a lanzar la petición" })).toBeVisible();
     await expect(station(page, "orchestrator")).toHaveAttribute("data-state", "error");
     await expect(page.getByText("La ejecución se detuvo antes de que el Orquestador")).toBeVisible();
+    // Stored English summaries are shown in Spanish.
+    await expect(page.getByRole("log")).toContainText(
+      "El proveedor rechazó la llamada por límite de uso (HTTP 429).",
+    );
   });
 
   test("respuesta mal formada: falla sin reintentar y propone reformular", async ({ page }) => {
+    await useFakeBackend(page, "malformed");
     await openDashboard(page);
-    await submitRequest(page, "Crea un README para la demo [simular:formato]");
+    const request = "Crea un README para la demo rota";
+    await submitRequest(page, request);
 
-    await expect(runStatus(page)).toHaveText("Fallida", { timeout: 30_000 });
+    await expect(runStatus(page)).toHaveText("Fallida", { timeout: 15_000 });
     const failure = page.locator('.notice[data-tone="danger"]');
     await expect(failure).toContainText("respuesta mal formada");
     await failure.getByRole("button", { name: "Editar la petición" }).click();
     await expect(requestInput(page)).toBeFocused();
-    await expect(requestInput(page)).toHaveValue(
-      "Crea un README para la demo [simular:formato]",
-    );
+    await expect(requestInput(page)).toHaveValue(request);
   });
 });
 
-test.describe("rate limiting", () => {
-  test("bloquea la tercera ejecución del día y dice cuándo volver", async ({ page }) => {
-    // The e2e server sets RATE_LIMIT_RUNS_PER_USER_DAY=2 for this test.
+test.describe("rate limiting (backend simulado)", () => {
+  test("explica el límite diario, dice cuándo volver y conserva el texto", async ({ page }) => {
+    await useFakeBackend(page, "rate_limited_day");
     await openDashboard(page);
-    await submitRequest(page, "Crea un README para la primera demo");
-    await waitForCompletion(page);
-    await submitRequest(page, "Crea un README para la segunda demo");
-    await waitForCompletion(page);
+    const request = "Crea un README para la tercera demo";
+    await submitRequest(page, request);
 
-    await submitRequest(page, "Crea un README para la tercera demo");
     const notice = page.locator('.notice[data-tone="danger"]');
     await expect(notice).toContainText("Has alcanzado el límite diario");
-    await expect(notice).toContainText(/Podrás volver a intentarlo en \d+ h/);
-    // The text stays in the box so nothing is lost.
-    await expect(requestInput(page)).toHaveValue("Crea un README para la tercera demo");
+    await expect(notice).toContainText("Podrás volver a intentarlo en 20 h");
+    await expect(requestInput(page)).toHaveValue(request);
 
     await notice.getByRole("button", { name: /Cerrar aviso/ }).click();
     await expect(notice).toHaveCount(0);

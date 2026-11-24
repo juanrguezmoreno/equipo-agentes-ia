@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { AUTH_FILE } from "./e2e/paths";
 
 const PORT = Number(process.env.E2E_PORT ?? 3200);
 const baseURL = `http://127.0.0.1:${PORT}`;
@@ -6,8 +7,15 @@ const baseURL = `http://127.0.0.1:${PORT}`;
 /**
  * End-to-end tests run against a production build with the deterministic
  * mock provider (AI_PROVIDER=mock), so they never spend model quota. They do
- * use the Supabase project configured in .env.local: each test signs in as a
- * fresh anonymous user and creates a few runs there.
+ * use the Supabase project configured in .env.local, but sparingly:
+ *
+ * - One anonymous sign-in per suite run (setup project + storageState).
+ * - Only the tests that must prove the real pipeline (flow, iteration) create
+ *   runs: two per suite, three with screenshots, under the 5-per-hour owner
+ *   limit enforced in Postgres.
+ * - Validation tests hit the real API but are rejected before any write.
+ * - Failure and rate-limit UI tests use e2e/fake-backend.ts and never reach
+ *   Supabase or the API.
  */
 export default defineConfig({
   testDir: "./e2e",
@@ -25,7 +33,15 @@ export default defineConfig({
     screenshot: "only-on-failure",
     locale: "es-ES",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    // Signs in anonymously once per suite run; see e2e/auth.setup.ts.
+    { name: "setup", testMatch: /auth\.setup\.ts/ },
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"], storageState: AUTH_FILE },
+      dependencies: ["setup"],
+    },
+  ],
   webServer: {
     command: process.env.E2E_SKIP_BUILD
       ? `npx next start --port ${PORT}`
@@ -40,8 +56,10 @@ export default defineConfig({
     env: {
       AI_PROVIDER: "mock",
       AI_MOCK_LATENCY_MS: "900",
-      // Low enough for the rate-limit test to reach it with three runs.
-      RATE_LIMIT_RUNS_PER_USER_DAY: "2",
+      // All tests share one user, so their steps add up within a minute. The
+      // app's own per-minute step limit (not Supabase's) would pause the
+      // suite for ~45 s; it is covered by lib/rate-limit unit tests instead.
+      RATE_LIMIT_STEPS_PER_USER_MINUTE: "60",
     },
   },
 });

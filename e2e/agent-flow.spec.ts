@@ -7,11 +7,42 @@ import {
   waitForCompletion,
 } from "./helpers";
 
+// These tests prove the real pipeline: browser → API routes → Postgres RPCs →
+// Realtime, with only the model replaced by AI_PROVIDER=mock. Each creates one
+// run in Supabase, so keep this file small (see playwright.config.ts).
+
 test.describe("flujo principal", () => {
   test("crear petición → ver agentes trabajando → tarea completada", async ({
     page,
   }, testInfo) => {
+    // Records, for every log row inserted, whether it entered with motion.
+    await page.addInitScript(() => {
+      const w = window as unknown as { __logEntries: boolean[] };
+      w.__logEntries = [];
+      new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof HTMLElement)) {
+              continue;
+            }
+            // A whole list can be inserted at once; count its rows too.
+            const rows = node.matches("li.log-item")
+              ? [node]
+              : [...node.querySelectorAll<HTMLElement>("li.log-item")];
+            for (const row of rows) {
+              w.__logEntries.push(row.closest<HTMLElement>(".log")?.dataset.live === "true");
+            }
+          }
+        }
+      }).observe(document, { childList: true, subtree: true });
+    });
+    const logEntries = () =>
+      page.evaluate(() => (window as unknown as { __logEntries: boolean[] }).__logEntries);
+
     await openDashboard(page);
+    // The shared session may open on an earlier run; only new rows count.
+    await page.waitForTimeout(500);
+    const entriesBefore = (await logEntries()).length;
 
     const request = "Crea un README para la demo del equipo de agentes";
     await submitRequest(page, request);
@@ -29,7 +60,7 @@ test.describe("flujo principal", () => {
       timeout: 30_000,
     });
 
-    await waitForCompletion(page);
+    await waitForCompletion(page, request);
     await testInfo.attach("ejecucion-completada", {
       body: await page.screenshot({ fullPage: true }),
       contentType: "image/png",
@@ -58,12 +89,28 @@ test.describe("flujo principal", () => {
 
     // No failure notice is shown for a completed run.
     await expect(page.locator('.notice[data-tone="danger"]')).toHaveCount(0);
+
+    // Motion: events that arrived live slid in...
+    const liveEntries = (await logEntries()).slice(entriesBefore);
+    expect(liveEntries.filter(Boolean).length).toBeGreaterThan(0);
+
+    // ...but reloading shows the same history without animating every row.
+    await page.reload();
+    await expect(page.getByRole("heading", { level: 2, name: request })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator("li.log-item").first()).toBeVisible();
+    await page.waitForTimeout(500);
+    const afterReload = await logEntries();
+    expect(afterReload.length).toBeGreaterThan(5);
+    expect(afterReload.filter(Boolean)).toEqual([]);
   });
 
   test("Testing rechaza una iteración y Develop la corrige", async ({ page }) => {
     await openDashboard(page);
-    await submitRequest(page, "Crea un README para la demo [simular:iteracion]");
-    await waitForCompletion(page);
+    const request = "Crea un README para la demo [simular:iteracion]";
+    await submitRequest(page, request);
+    await waitForCompletion(page, request);
 
     await expect(runStatus(page)).toHaveText("Completada");
     await expect(page.getByLabel("Archivo y revisión")).toContainText(
