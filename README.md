@@ -111,9 +111,20 @@ npm run test:e2e
 
 `npm run test:e2e` construye la aplicación y la arranca en el puerto 3200 con
 `AI_PROVIDER=mock`, un proveedor simulado y determinista: los tests no llaman a
-Gemini ni a Groq y no gastan cuota. Sí usan el proyecto Supabase de
-`.env.local`: cada test abre una sesión anónima nueva y crea unas pocas
-ejecuciones. Para no reconstruir, `E2E_SKIP_BUILD=1 npm run test:e2e`. Para
+Gemini ni a Groq y no gastan cuota. Del proyecto Supabase de `.env.local` usan
+lo mínimo:
+
+- Un solo inicio de sesión anónimo por tanda. El proyecto `setup`
+  (`e2e/auth.setup.ts`) guarda la sesión en `playwright/.auth/user.json`
+  (ignorado por Git) y todos los tests la reutilizan.
+- Dos ejecuciones reales por tanda (tres con capturas): flujo principal e
+  iteración.
+- Los tests de errores y límites usan `e2e/fake-backend.ts`, que simula la
+  API, PostgREST y Realtime en el navegador.
+
+Supabase limita por IP los inicios de sesión anónimos. Es una protección
+deliberada y no se debe relajar para los tests. Para no reconstruir,
+`E2E_SKIP_BUILD=1 npm run test:e2e`. Para
 regenerar las capturas de `docs/screenshots/fase4`, añade `E2E_SCREENSHOTS=1`.
 
 Para probar la interfaz sin modelos reales, arranca `next dev` con

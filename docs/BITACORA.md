@@ -779,3 +779,136 @@ tests, lint, TypeScript y build en verde, commit, push y bitácora.
 ### Aprobación
 
 Fase 4 aprobada por el usuario el 2026-11-24 (commits `5ca0bf2` y `98c56a0` en `origin/main`).
+
+## Revisión de animaciones (2026-11-24)
+
+### Petición
+
+El usuario lanzó `/review-animations` (pendiente desde la Fase 3.5) y pidió
+aplicar las correcciones de prioridad alta y media sin romper tests, anotar
+aquí las de prioridad baja, y hacer commit y push.
+
+### Hallazgos aplicados
+
+- **Alta. El historial del registro entraba entero con animación.**
+  `event-timeline.tsx` activaba `data-live` un frame después de montarse,
+  mientras la ejecución aún cargaba. Al llegar los datos, o al cambiar de
+  ejecución, las hasta 250 filas entraban a la vez con `@starting-style`. Es
+  justo lo que el comentario del código pretendía evitar. Ahora la animación se
+  activa por ejecución, un frame después de que se haya pintado su historial.
+  Solo los eventos que llegan en directo se deslizan.
+- **Media. Los avisos aparecían de golpe.** `.notice` entra ahora con
+  opacidad y `translateY(-4px)` en 220 ms con `--ease-out`, mediante
+  `@starting-style`. Solo anima la inserción, no la cuenta atrás. Con
+  `prefers-reduced-motion` solo cambia la opacidad.
+- **Media. Una variable del padre movía las transformaciones de los hijos.**
+  `--stop` se definía en `.lane-rail` y desplazaba `.lane-progress` y
+  `.lane-token`. Ahora se define directamente en esos dos elementos, de modo
+  que un cambio solo recalcula los elementos que se mueven.
+
+El test E2E del flujo principal lo verifica con un `MutationObserver` que
+registra si cada fila se insertó con el movimiento de entrada activo. Durante
+la ejecución debe haber filas animadas y tras recargar ninguna. Ver la entrada
+siguiente sobre la prueba en rojo.
+
+### Pendientes de prioridad baja
+
+- `.icon-button:active` usa `scale(0.94)`; el estándar pide 0.95–0.98 (0.96).
+- La rotación del chevron de `<details>` no está en la lista de
+  `prefers-reduced-motion`.
+- Tres latidos simultáneos indican el mismo estado «trabajando»: lámpara de la
+  cabecera, lámpara de la estación y ficha. Valorar dejar solo la estación y
+  la ficha.
+- Al cambiar de ejecución, la barra superior y el fondo de las estaciones
+  transicionan desde el estado de la ejecución anterior. Esa animación no
+  explica nada; se podría saltar en el primer render de cada ejecución.
+- Accesibilidad, fuera del ámbito estricto de movimiento: la cuenta atrás del
+  reintento vive en un `role="status"` que cambia cada segundo, y un lector de
+  pantalla puede anunciarla repetidamente. Alternativa: mostrar la hora
+  absoluta del reintento o sacar la cifra de la región viva.
+
+## E2E: una sola sesión anónima por tanda (2026-11-24)
+
+### Problema
+
+Al verificar la revisión de animaciones, los E2E empezaron a fallar al abrir
+la página: `POST /auth/v1/signup` devolvía **HTTP 429**, comprobado en la traza
+de red de Playwright. Cada test abría su propio contexto de navegador y, por
+tanto, un usuario anónimo nuevo. Con 7–10 tests por tanda y varias tandas
+seguidas durante la Fase 4, se agotó el límite de Supabase para inicios de
+sesión anónimos por IP.
+
+Mientras tanto, las dos «pruebas en rojo» de la animación fallaron por este
+motivo y no por el bug que pretendían demostrar. Se descartaron y se repitieron
+después.
+
+### Petición
+
+El usuario pidió:
+- Un *setup* global que inicie sesión una sola vez y guarde el
+  `storageState` para que todos los tests lo reutilicen.
+- Que los tests que no necesiten Supabase real usen un backend simulado.
+- No cambiar el rate limit de Supabase, que es una mitigación de seguridad
+  acordada.
+
+### Solución
+
+- **Un proyecto `setup` de Playwright** (`e2e/auth.setup.ts`), el patrón
+  documentado («Authentication», consultado con Context7). Abre la página una
+  vez, deja que la app inicie la sesión anónima y guarda el estado en
+  `playwright/.auth/user.json`, ignorado por Git. El proyecto `chromium`
+  depende de él y usa ese `storageState`.
+  - **Resultado:** 1 inicio de sesión por tanda en lugar de 1 por test.
+  - Se abre una sesión nueva en cada tanda, en vez de reutilizar una
+    guardada para siempre. Así el límite propio de la app de 5 runs por
+    propietario y hora (fijo en el RPC) no se acumula entre tandas.
+- **Backend simulado para la UI de fallos** (`e2e/fake-backend.ts`). Con
+  `page.route` y `page.routeWebSocket` responde a:
+  - `POST /api/runs` y `/api/runs/:id/step`;
+  - las lecturas PostgREST de runs y eventos, con las mismas columnas, tipos
+    de evento y metadatos que escriben las RPC;
+  - un socket Realtime que nunca contesta.
+
+  Lo usan los tests de cuota agotada, respuesta mal formada, límite diario y
+  sus capturas. Ninguno crea runs ni sesiones.
+- **Supabase real solo donde aporta.**
+  - El flujo principal y la iteración Develop↔Testing prueban la cadena real
+    (API → RPC → Realtime) con el modelo simulado: 2 runs por tanda, 3 con
+    capturas.
+  - La comprobación de que el historial no se anima al recargar se integró en
+    el test del flujo principal, para no crear otro run.
+  - Los tests de validación llaman a la API real con la sesión compartida;
+    se rechazan antes de escribir nada.
+- **Cobertura que pasa a ser unitaria.** El test E2E del límite diario
+  necesitaba crear tres runs reales con un límite rebajado. Ahora la UI se
+  prueba con el backend simulado, y `lib/rate-limit/check.ts` se cubre con
+  tests unitarios sobre un cliente Supabase falso (7 tests):
+  - ámbito de las consultas;
+  - orden global → usuario;
+  - tiempo de espera;
+  - límites por variable de entorno;
+  - fallo cerrado;
+  - límite de pasos por minuto.
+- **Ajustes por compartir usuario.**
+  - Como la página puede abrir en una ejecución anterior ya completada,
+    `waitForCompletion` comprueba primero que el título sea la petición
+    recién enviada.
+  - Sumando los pasos de todos los tests se alcanzaba el límite propio de la
+    app de 10 pasos por minuto, y el test de iteración tardaba 55 s en
+    pausa. Solo en el servidor de E2E se sube ese límite (de la app, no de
+    Supabase) a 60.
+- **No se ha tocado ningún límite de Supabase.**
+
+### Verificación
+
+- `npm test`: 13 ficheros y 83 tests pasan.
+- `npx tsc --noEmit` y `npm run lint`: sin errores.
+- `E2E_SCREENSHOTS=1 npm run test:e2e`: build correcto y 12 de 12 tests en
+  1,0 min (setup, 7 de la batería y 4 capturas), con un único inicio de
+  sesión anónimo.
+- **Prueba en rojo del arreglo de animación,** repetida ya sin el 429. Con el
+  código antiguo del registro, el test del flujo principal falla porque
+  **19 filas** del historial entran animadas al recargar. Con el arreglo, 0.
+- En las capturas simuladas, el indicador de Realtime muestra «Conectando»,
+  porque el socket simulado no contesta. Es esperable y no afecta a lo que
+  documentan.

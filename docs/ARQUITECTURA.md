@@ -340,10 +340,18 @@ hay límite por IP.
 con salidas deterministas que cumplen los checks del plan (`lib/ai/mock-model.ts`).
 Se niega a arrancar si `VERCEL_ENV=production`. Marcadores en la petición
 simulan fallos: `[simular:cuota]`, `[simular:caida]`, `[simular:timeout]`,
-`[simular:formato]` e `[simular:iteracion]`. Playwright (`e2e/`) construye la app,
-la arranca con el mock y nunca reutiliza un servidor existente para no gastar
-cuota real. Usa el proyecto Supabase de `.env.local`: cada test crea un usuario
-anónimo y unos pocos runs.
+`[simular:formato]` e `[simular:iteracion]`. Playwright (`e2e/`) construye la
+app, la arranca con el mock y nunca reutiliza un servidor existente, para no
+gastar cuota real. Del proyecto Supabase de `.env.local` usa:
+
+- Una sesión anónima por tanda, abierta en el proyecto `setup` y compartida
+  mediante `storageState`.
+- Dos o tres runs reales: los del flujo principal y la iteración. Se quedan
+  por debajo del límite de 5 runs por propietario y hora.
+
+Los escenarios de fallo y de límite usan `e2e/fake-backend.ts`. Simula en el
+navegador la API, las lecturas PostgREST (mismas filas que escriben las RPC) y
+un socket Realtime que nunca responde.
 
 ## Riesgos y mitigaciones
 
