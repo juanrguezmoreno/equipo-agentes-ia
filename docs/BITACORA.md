@@ -1341,3 +1341,7 @@ patrones, imprimiendo solo el commit, el archivo y el tipo de coincidencia:
 - `.env.example` solo contiene placeholders.
 - Los archivos de sesión anónima que guardó `prod-run.mjs` estaban en el
   scratchpad, fuera del repositorio, y se borraron.
+
+### Aprobación
+
+Fases 5.5 y 6 aprobadas por el usuario el 2026-11-24 (último commit de documentación `78d18b9` en `origin/main`). Con esta aprobación se da por terminado el desarrollo del proyecto; producción en https://equipo-agentes-ia-gilt.vercel.app.
