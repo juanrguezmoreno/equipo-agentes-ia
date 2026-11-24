@@ -775,3 +775,7 @@ tests, lint, TypeScript y build en verde, commit, push y bitácora.
   las RPC.
 - `npx playwright install chromium` actualizó los navegadores a la build 1255 y
   retiró la 1228.
+
+### Aprobación
+
+Fase 4 aprobada por el usuario el 2026-11-24 (commits `5ca0bf2` y `98c56a0` en `origin/main`).
